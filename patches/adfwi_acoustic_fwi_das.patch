@@ -1,0 +1,134 @@
+diff --git a/ADFWI/fwi/acoustic_fwi.py b/ADFWI/fwi/acoustic_fwi.py
+old mode 100644
+new mode 100755
+index a8670e1..817ac32
+--- a/ADFWI/fwi/acoustic_fwi.py
++++ b/ADFWI/fwi/acoustic_fwi.py
+@@ -45,6 +45,8 @@ class AcousticFWI(torch.nn.Module):
+                  cache_result_epoch:Optional[bool]                            = 1,
+                  save_fig_epoch:Optional[int]                                 = -1,
+                  save_fig_path:Optional[str]                                  = "",
++                 das_layer                                                    = None,
++                 obs_key:Optional[str]                                        = "p",
+                 ):
+         """
+         Description:
+@@ -69,6 +71,8 @@ class AcousticFWI(torch.nn.Module):
+         cache_result (Optional[bool])                                  : Whether to cache intermediate inversion results for later use. Default is True.
+         save_fig_epoch (Optional[int])                                 : The interval (in epochs) at which to save the inversion result as a figure. Default is -1 (no figure saved).
+         save_fig_path (Optional[str])                                  : The path where to save the inversion result figure. Default is an empty string (no path specified).
++        das_layer (Optional[torch.nn.Module])                          : Differentiable DAS observation operator mapping the velocity records (u, w) [shot, time, rcv] to channel gathers [shot, time, channel]. When given, the synthetic compared against the observed data is das_layer(u, w) with CHANNEL-level masks (a channel is alive iff both of its gauge-endpoint receivers are alive). Default is None (stock pressure-record behavior, bit-identical to the unpatched class).
++        obs_key (Optional[str])                                        : Key of the observed gather in obs_data.data. Default is "p" (stock). Use e.g. "strain_rate" together with das_layer.
+         """
+         super().__init__()
+         self.propagator                 = propagator
+@@ -97,11 +101,27 @@ class AcousticFWI(torch.nn.Module):
+         self.waveform_mute_late_window  = waveform_mute_late_window 
+         self.waveform_mute_offset       = waveform_mute_offset
+         
++        # DAS extension (optional): differentiable observation operator.
++        # Observed gathers then have C channels while the propagator records
++        # R = C + 2 receivers, so the stock receiver-mask multiplies must not
++        # be applied to channel gathers; channel-level masks are used instead.
++        self.das_layer = das_layer
++        self.obs_key   = obs_key
++        if self.das_layer is not None:
++            channel_masks = self.das_layer.channel_mask(self.receiver_masks_2D.to(torch.bool))
++            self.channel_masks_2D = channel_masks                                    # [shot, channel]
++            self.channel_masks_3D = channel_masks.unsqueeze(1).expand(-1, self.propagator.nt, -1).to(self.device)  # [shot, time, channel]
++            if self.waveform_mute_offset is not None:
++                raise ValueError("waveform_mute_offset is receiver-based and is not supported with das_layer (channel gathers have C != R traces)")
++
+         # observed data
+-        obs_p   = self.obs_data.data["p"]
++        obs_p   = self.obs_data.data[obs_key]
+         obs_p   = numpy2tensor(obs_p,self.dtype).to(self.device)
+         if self.propagator.receiver_masks_obs: # mark the observed data need to be masked or not
+-            obs_p   = obs_p*self.receiver_masks_3D
++            if self.das_layer is not None:
++                obs_p = obs_p*self.channel_masks_3D.to(obs_p.dtype)
++            else:
++                obs_p = obs_p*self.receiver_masks_3D
+         self.data_masks = numpy2tensor(self.obs_data.data_masks).to(self.device) if self.obs_data.data_masks is not None else None
+         if self.data_masks is not None: # some of the data are unuseful
+             obs_p = obs_p*self.data_masks
+@@ -193,6 +213,35 @@ class AcousticFWI(torch.nn.Module):
+             return loss_fn.apply(synthetic_waveform, observed_waveform)
+         
+     
++    # synthetic-gather construction (shared by forward and forward_closure)
++    def _build_synthetic(self, record_waveform, shot_index):
++        """Build the synthetic gather compared against the observed data.
++
++        With a das_layer, the synthetic is the DAS observation operator applied
++        to the velocity records (u, w), masked at CHANNEL level. Otherwise this
++        is the stock pressure-record + receiver-mask logic, moved here verbatim
++        from forward()/forward_closure().
++        """
++        if self.das_layer is not None:
++            syn = self.das_layer(record_waveform["u"], record_waveform["w"])
++            syn = syn * self.channel_masks_3D[shot_index].to(syn.dtype)
++            if self.data_masks is not None:
++                syn = syn * self.data_masks[shot_index]
++            return syn
++        rcv_p = record_waveform["p"]
++        if rcv_p.shape == self.obs_p[shot_index].shape: # observed and synthetic data with the same shape (partial-data missing)
++            receiver_mask_3D = self.receiver_masks_3D[shot_index] # [shot, time, rcv]
++            syn_p = rcv_p*receiver_mask_3D
++        else: # observed and synthetic data with the different shape (trace missing)
++            receiver_mask_2D = self.receiver_masks_2D[shot_index] # [shot, rcv]
++            syn_p = torch.zeros_like(self.obs_p[shot_index],device=self.device)
++            for k in range(rcv_p.shape[0]):
++                syn_p[k] = rcv_p[k,...,np.argwhere(receiver_mask_2D[k]).tolist()].squeeze()
++        if self.data_masks is not None:
++            data_mask = self.data_masks[shot_index]
++            syn_p = syn_p * data_mask
++        return syn_p
++
+     # regularization calculation
+     def calculate_regularization_loss(self, model_param, weight_x, weight_z, regularization_fn):
+         """
+@@ -286,19 +335,9 @@ class AcousticFWI(torch.nn.Module):
+                     forw  = forward_wavefield_p.cpu().detach().numpy()
+                 else:
+                     forw += forward_wavefield_p.cpu().detach().numpy()
+-                
++
+                 # misfit
+-                if rcv_p.shape == self.obs_p[shot_index].shape: # observed and synthetic data with the same shape (partial-data missing)
+-                    receiver_mask_3D = self.receiver_masks_3D[shot_index] # [shot, time, rcv]
+-                    syn_p = rcv_p*receiver_mask_3D 
+-                else: # observed and synthetic data with the different shape (trace missing)
+-                    receiver_mask_2D = self.receiver_masks_2D[shot_index] # [shot, rcv]
+-                    syn_p = torch.zeros_like(self.obs_p[shot_index],device=self.device)
+-                    for k in range(rcv_p.shape[0]):
+-                        syn_p[k] = rcv_p[k,...,np.argwhere(receiver_mask_2D[k]).tolist()].squeeze()
+-                if self.data_masks is not None:
+-                    data_mask = self.data_masks[shot_index]
+-                    syn_p = syn_p * data_mask
++                syn_p = self._build_synthetic(record_waveform, shot_index)
+                 data_loss = self.calculate_loss(syn_p, self.obs_p[shot_index], self.waveform_normalize, self.loss_fn, cutoff_freq, self.propagator.dt,shot_index)
+                 
+                 # regularization
+@@ -386,19 +425,9 @@ class AcousticFWI(torch.nn.Module):
+                         self.forw  = forward_wavefield_p.cpu().detach().numpy()
+                     else:
+                         self.forw += forward_wavefield_p.cpu().detach().numpy()
+-                    
++
+                     # misfit
+-                    if rcv_p.shape == self.obs_p[shot_index].shape: # observed and synthetic data with the same shape (partial-data missing)
+-                        receiver_mask_3D = self.receiver_masks_3D[shot_index] # [shot, time, rcv]
+-                        syn_p = rcv_p*receiver_mask_3D 
+-                    else: # observed and synthetic data with the different shape (trace missing)
+-                        receiver_mask_2D = self.receiver_masks_2D[shot_index] # [shot, rcv]
+-                        syn_p = torch.zeros_like(self.obs_p[shot_index],device=self.device)
+-                        for k in range(rcv_p.shape[0]):
+-                            syn_p[k] = rcv_p[k,...,np.argwhere(receiver_mask_2D[k]).tolist()].squeeze()
+-                    if self.data_masks is not None:
+-                        data_mask = self.data_masks[shot_index]
+-                        syn_p = syn_p * data_mask
++                    syn_p = self._build_synthetic(record_waveform, shot_index)
+                     data_loss = self.calculate_loss(syn_p, self.obs_p[shot_index], self.waveform_normalize, self.loss_fn, cutoff_freq, self.propagator.dt, shot_index)
+                     
+                     # regularization
