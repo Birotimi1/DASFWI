@@ -84,6 +84,7 @@ DEFAULT_CONFIG = dict(
     device="cpu",
     dtype=torch.float64,
     nabc=20,
+    vp_bound=None,          # (min, max) clip for the inverted vp, or None
 )
 
 
@@ -115,7 +116,8 @@ def run_inverse_crime(config):
 
     # inversion
     model = make_acoustic_model(vp_init, vp_grad=True, nabc=cfg["nabc"],
-                                device=device, dtype=dtype)
+                                device=device, dtype=dtype,
+                                vp_bound=cfg["vp_bound"])
     prop = AcousticPropagator(model, survey, device=device, dtype=dtype)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["lr"],
                                   weight_decay=0.0)
