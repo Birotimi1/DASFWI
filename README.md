@@ -14,7 +14,7 @@ adjoint source is generated automatically by autograd. Developed per the build s
 | Task | File(s) | Status |
 |------|---------|--------|
 | T1 | package skeleton, `env.yml` | ✅ done |
-| T2 | `das/geometry.py` + tests | pending |
+| T2 | `das/geometry.py` + tests | ✅ done (16 tests) |
 | T3 | `das/das_layer.py` + tests | pending |
 | T4 | `tests/test_adjoint.py` (E6–E9 gates) | pending |
 | T5 | ADFWI `fwi/acoustic_fwi.py` patch + tests | pending |
