@@ -18,6 +18,6 @@ adjoint source is generated automatically by autograd. Developed per the build s
 | T3 | `das/das_layer.py` + tests | ✅ done (12 tests) |
 | T4 | `tests/test_adjoint.py` (E6–E9 gates) | ✅ done (E8 rel. err ≤ 4e−5) |
 | T5 | ADFWI `fwi/acoustic_fwi.py` patch + tests | ✅ done (bit-identical no-regression; patch archived in `patches/`) |
-| T6 | `inversion/misfit_schedule.py` + tests | pending |
+| T6 | `inversion/misfit_schedule.py` + tests | ✅ done (10 tests; exact Weci equivalence) |
 | T7 | `forge/proxy_model.py`, `inversion/run_inverse_crime.py` | pending |
 | T8 | `forge/io_preprocess.py`, run-script skeletons + tests | pending |
