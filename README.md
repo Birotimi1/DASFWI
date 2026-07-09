@@ -19,5 +19,8 @@ adjoint source is generated automatically by autograd. Developed per the build s
 | T4 | `tests/test_adjoint.py` (E6–E9 gates) | ✅ done (E8 rel. err ≤ 4e−5) |
 | T5 | ADFWI `fwi/acoustic_fwi.py` patch + tests | ✅ done (bit-identical no-regression; patch archived in `patches/`) |
 | T6 | `inversion/misfit_schedule.py` + tests | ✅ done (10 tests; exact Weci equivalence) |
-| T7 | `forge/proxy_model.py`, `inversion/run_inverse_crime.py` | pending |
-| T8 | `forge/io_preprocess.py`, run-script skeletons + tests | pending |
+| T7 | `forge/proxy_model.py`, `inversion/run_inverse_crime.py` | ✅ done (miniature end-to-end inversion passes) |
+| T8 | `forge/io_preprocess.py`, run-script skeletons + tests | ✅ done (10 tests) |
+
+`ADFWI_local/` mirrors the local (T5-patched) ADFWI package; refresh it with
+`./scripts/sync_adfwi.sh` before committing ADFWI changes.
