@@ -94,16 +94,23 @@ def gardner_rho(vp, rho_air=1.225, v_air_max=V_AIR + 1.0):
 
 def make_acoustic_model(vp, vp_grad=False, dx=DX, dz=DZ, nabc=20,
                         free_surface=False, dtype=torch.float64,
-                        device="cpu", vp_bound=None):
+                        device="cpu", vp_bound=None, rho=None):
     """AcousticModel wrapper with the project's fixed conventions.
 
     auto_update_rho=False ALWAYS: model.forward() would otherwise overwrite
     rho from vp through .data (no autograd path), silently desynchronizing
     AD and FD gradients (found in T4).
+
+    rho: pass the SAME fixed density to the observed-data model and the
+    inversion model. Defaulting rho to Gardner-of-this-vp is only safe when
+    both models share the same vp; deriving obs-rho from vp_true but
+    inversion-rho from vp_init puts a systematic amplitude error in the data
+    that vp must absorb (the acoustic Marmousi demo's documented failure).
     """
     vp = np.asarray(vp, dtype=np.float64)
     nz, nx = vp.shape
-    return AcousticModel(0, 0, nx, nz, dx, dz, vp=vp, rho=gardner_rho(vp),
+    rho = gardner_rho(vp) if rho is None else np.asarray(rho, dtype=np.float64)
+    return AcousticModel(0, 0, nx, nz, dx, dz, vp=vp, rho=rho,
                          vp_grad=vp_grad, rho_grad=False,
                          auto_update_rho=False, free_surface=free_surface,
                          abc_type="PML", nabc=nabc,

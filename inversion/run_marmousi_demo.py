@@ -42,14 +42,20 @@ STEP = 4                           # 1.25 m * 4 = 5 m exactly
 def load_crop():
     m = load_marmousi_model(MARMOUSI_DIR)
     ix0, iz0 = int(X0_M / 1.25), int(Z0_M / 1.25)
-    vp = m["vp"][ix0:ix0 + (NX - 1) * STEP + 1:STEP,
-                 iz0:iz0 + (NZ - 1) * STEP + 1:STEP].T
-    return np.asarray(vp, dtype=np.float64)
+    sl = (slice(ix0, ix0 + (NX - 1) * STEP + 1, STEP),
+          slice(iz0, iz0 + (NZ - 1) * STEP + 1, STEP))
+    vp = np.asarray(m["vp"][sl].T, dtype=np.float64)
+    rho = np.asarray(m["rho"][sl].T, dtype=np.float64)
+    return vp, rho
 
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
-    vp_true = load_crop()
+    # rho: Marmousi2's TRUE density, fixed and shared by the observed-data
+    # and inversion models. The first run of this demo derived obs-rho from
+    # vp_true but inversion-rho from vp_init (Gardner each), and vp absorbed
+    # the resulting amplitude error: GC loss fell while model RMS ROSE.
+    vp_true, rho_true = load_crop()
     vp_init = gaussian_filter(vp_true, sigma=12.0)   # smooth starting model
     print(f"vp_true {vp_true.shape}: {vp_true.min():.0f}-{vp_true.max():.0f}",
           flush=True)
@@ -67,6 +73,7 @@ def main():
         bands=[(5.0, 12), (10.0, 13)],       # multiscale: 5 Hz then 10 Hz
         dtype=torch.float32,
         vp_bound=(1400.0, 3700.0),
+        rho=rho_true,
     ))
     mins = (time.time() - t0) / 60.0
 

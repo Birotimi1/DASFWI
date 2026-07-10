@@ -85,6 +85,7 @@ DEFAULT_CONFIG = dict(
     dtype=torch.float64,
     nabc=20,
     vp_bound=None,          # (min, max) clip for the inverted vp, or None
+    rho=None,               # fixed density [nz, nx]; None -> Gardner(vp_true)
 )
 
 
@@ -106,9 +107,17 @@ def run_inverse_crime(config):
     source = vibroseis_line(cfg["nt"], cfg["dt"], cfg["shots"]["f0"],
                             cfg["shots"]["x_indices"], cfg["shots"]["z_index"])
 
+    # ONE fixed density for BOTH models: deriving obs-rho from vp_true but
+    # inversion-rho from vp_init injects a systematic amplitude error that vp
+    # must absorb (documented failure of the first acoustic Marmousi demo)
+    from forge.proxy_model import gardner_rho
+    rho_fixed = (gardner_rho(vp_true) if cfg["rho"] is None
+                 else np.asarray(cfg["rho"], dtype=np.float64))
+
     # observed data: TRUE model through the same operator (inverse crime)
     true_model = make_acoustic_model(vp_true, nabc=cfg["nabc"],
-                                     device=device, dtype=dtype)
+                                     device=device, dtype=dtype,
+                                     rho=rho_fixed)
     obs_data, survey, layer = generate_observed(
         true_model, geometry, source,
         checkpoint_segments=cfg["checkpoint_segments"],
@@ -117,7 +126,7 @@ def run_inverse_crime(config):
     # inversion
     model = make_acoustic_model(vp_init, vp_grad=True, nabc=cfg["nabc"],
                                 device=device, dtype=dtype,
-                                vp_bound=cfg["vp_bound"])
+                                vp_bound=cfg["vp_bound"], rho=rho_fixed)
     prop = AcousticPropagator(model, survey, device=device, dtype=dtype)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["lr"],
                                   weight_decay=0.0)
