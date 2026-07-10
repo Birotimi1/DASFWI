@@ -86,7 +86,8 @@ DEFAULT_CONFIG = dict(
     nabc=20,
     vp_bound=None,          # (min, max) clip for the inverted vp, or None
     rho=None,               # fixed density [nz, nx]; None -> Gardner(vp_true)
-    optimizer="adamw",      # "adamw" (spec default) or "sgd".
+    optimizer="adamw",      # "adamw" (spec default), "adam" (Liu's examples),
+                            # or "sgd".
     # "sgd" + GradProcessor(norm_grad=True) is the classic FWI update: the
     # processed gradient is vmax * g/|g|max, so the peak cell moves lr*vmax
     # m/s per iteration and weakly-illuminated cells move proportionally
@@ -95,6 +96,14 @@ DEFAULT_CONFIG = dict(
     # into full-size updates (diagnosed on the Marmousi single-fiber demo:
     # uniform ~100 m/s |update| everywhere, RMS worse far from the fiber),
     # and silently defeats the illumination preconditioner.
+    grad_mask_top=None,     # zero the gradient in the top N rows (Liu's
+                            # examples use 10 to suppress source artifacts)
+    waveform_normalize=True,  # per-trace max-abs normalization inside
+                            # calculate_loss. Set False for misfits that
+                            # handle scaling themselves (e.g. SinkhornSafe's
+                            # global-per-shot scaling): per-trace normalize
+                            # divides by ~1e-38 maxima on numerically-dead
+                            # fiber traces and its BACKWARD overflows float32.
 )
 
 
@@ -140,6 +149,8 @@ def run_inverse_crime(config):
     if cfg["optimizer"] == "adamw":
         optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["lr"],
                                       weight_decay=0.0)
+    elif cfg["optimizer"] == "adam":
+        optimizer = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
     elif cfg["optimizer"] == "sgd":
         optimizer = torch.optim.SGD(model.parameters(), lr=cfg["lr"])
     else:
@@ -148,10 +159,17 @@ def run_inverse_crime(config):
                                                 gamma=1.0)
     loss_fn = GCMisfit64(dt=1) if cfg["misfit"] == "gc" else cfg["misfit"]
 
+    if cfg["grad_mask_top"] is not None:
+        grad_mask = np.ones_like(vp_init)
+        grad_mask[:int(cfg["grad_mask_top"]), :] = 0
+        gradient_processor = GradProcessor(grad_mask=grad_mask)
+    else:
+        gradient_processor = GradProcessor()
+
     fwi = AcousticFWI(prop, model, optimizer, scheduler,
                       loss_fn=loss_fn, obs_data=obs_data,
-                      gradient_processor=GradProcessor(),
-                      waveform_normalize=True,
+                      gradient_processor=gradient_processor,
+                      waveform_normalize=cfg["waveform_normalize"],
                       cache_result=True, save_fig_epoch=-1,
                       das_layer=layer, obs_key="strain_rate")
 
