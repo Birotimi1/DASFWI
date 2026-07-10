@@ -73,9 +73,13 @@ DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 NT, DT, F0 = 2200, 4e-4, 10.0
 SHOT_X = (20, 105, 190, 280)
 BANDS = [(5.0, 150), (10.0, 150)]  # (cutoff_freq_Hz, iterations): 300 total
-LR = 5.0
+LR = 3.0
 CHECKPOINT_SEGMENTS = 12
 SAVE_EVERY = 10                    # checkpoint npz every N iterations
+MIN_VP_VS = 1.5                    # enforce vp/vs >= 1.5 (Poisson > 0.1):
+#   updating vp and vs independently lets cells drift below vp/vs = sqrt(2)
+#   (negative Poisson's ratio) which destabilizes the elastic scheme - the
+#   first 300-iter run diverged exactly this way at ~iteration 50
 
 
 def load_crops():
@@ -176,6 +180,9 @@ def main():
             loss.backward()
             optimizer.step()
             model.forward()          # clip vp/vs to bounds
+            with torch.no_grad():    # physical stability: vs <= vp / MIN_VP_VS
+                model.vs.data = torch.minimum(model.vs.data,
+                                              model.vp.data / MIN_VP_VS)
             losses.append(float(loss))
             print(f"band {cutoff} Hz iter {it}: loss {loss:.5f} "
                   f"({time.time()-t_it:.0f}s)", flush=True)
