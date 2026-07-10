@@ -68,7 +68,12 @@ def main():
         fiber=dict(x_well=750.0, z_top=200.0, n_channels=100),
         shots=dict(x_indices=(20, 70, 120, 180, 240, 280), z_index=2,
                    f0=10.0),
-        lr=10.0,
+        # SGD + norm_grad: peak update = lr * vmax ~ 0.004 * 3550 = 14 m/s
+        # per iteration, gradient-proportional elsewhere (see run_inverse_crime
+        # optimizer note; AdamW moved every cell ~lr regardless of gradient
+        # and wrecked the unilluminated regions)
+        optimizer="sgd",
+        lr=0.004,
         misfit="gc",
         bands=[(5.0, 12), (10.0, 13)],       # multiscale: 5 Hz then 10 Hz
         dtype=torch.float32,

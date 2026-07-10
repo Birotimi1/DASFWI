@@ -86,6 +86,15 @@ DEFAULT_CONFIG = dict(
     nabc=20,
     vp_bound=None,          # (min, max) clip for the inverted vp, or None
     rho=None,               # fixed density [nz, nx]; None -> Gardner(vp_true)
+    optimizer="adamw",      # "adamw" (spec default) or "sgd".
+    # "sgd" + GradProcessor(norm_grad=True) is the classic FWI update: the
+    # processed gradient is vmax * g/|g|max, so the peak cell moves lr*vmax
+    # m/s per iteration and weakly-illuminated cells move proportionally
+    # less. AdamW's per-parameter normalization instead moves EVERY cell at
+    # ~lr per iteration, amplifying gradient noise in unilluminated regions
+    # into full-size updates (diagnosed on the Marmousi single-fiber demo:
+    # uniform ~100 m/s |update| everywhere, RMS worse far from the fiber),
+    # and silently defeats the illumination preconditioner.
 )
 
 
@@ -128,8 +137,13 @@ def run_inverse_crime(config):
                                 device=device, dtype=dtype,
                                 vp_bound=cfg["vp_bound"], rho=rho_fixed)
     prop = AcousticPropagator(model, survey, device=device, dtype=dtype)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["lr"],
-                                  weight_decay=0.0)
+    if cfg["optimizer"] == "adamw":
+        optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["lr"],
+                                      weight_decay=0.0)
+    elif cfg["optimizer"] == "sgd":
+        optimizer = torch.optim.SGD(model.parameters(), lr=cfg["lr"])
+    else:
+        raise ValueError(f'unknown optimizer {cfg["optimizer"]!r}')
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10 ** 6,
                                                 gamma=1.0)
     loss_fn = GCMisfit64(dt=1) if cfg["misfit"] == "gc" else cfg["misfit"]
