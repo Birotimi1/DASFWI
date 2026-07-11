@@ -16,6 +16,12 @@ executable      = hpc/condor/run_combo.sh
 arguments       = $(combo)
 initialdir      = .
 
+# GPU strategy = Liu's: ADFWI is strictly single-GPU per process (his
+# examples pin one experiment per card, cuda:0..7; the propagator's
+# gpu_num parameter is inert upstream). request_gpus=1 is the scheduler
+# form of that pinning - condor sets CUDA_VISIBLE_DEVICES so the scripts'
+# device "cuda" IS the assigned card. For manual fan-out on an interactive
+# multi-GPU node use hpc/launch_gpus.sh instead.
 request_gpus    = 1
 request_cpus    = 4
 request_memory  = 16GB

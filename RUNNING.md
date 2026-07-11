@@ -170,6 +170,26 @@ python hpc/standalone/run_elastic_das.py  --misfit gc --optimizer adam
 - Portable misfit fixes now live in `inversion/safe_misfits.py`
   (GCMisfit64, SinkhornSafe, SdtwSafe) and are shared by all runners.
 
+## 4d. GPU strategy (following Liu's ADFWI practice)
+
+ADFWI is SINGLE-GPU per process: Liu runs his test matrices by pinning one
+experiment per card (`device="cuda:0"..."cuda:7"` across his examples) and
+launching them concurrently; the propagators' `gpu_num`/`cpu_num` arguments
+are stored but never used (multi-GPU is upstream future work). Ours follows
+the same one-process-one-GPU rule, three ways:
+
+- **HTCondor** (`hpc/condor/*.sub`): `request_gpus = 1` per job; condor
+  sets `CUDA_VISIBLE_DEVICES`, so the scripts' auto-picked `"cuda"` IS the
+  assigned card — Liu's pinning, scheduler-managed.
+- **Interactive multi-GPU node**: `./hpc/launch_gpus.sh <NGPU>` fans the
+  campaign combos across cards in Liu-style batches (combo i on
+  cuda:(i mod NGPU), NGPU at a time). `DRY_RUN=1` prints the plan.
+- **Manual pinning**: every runner accepts `--device cuda:N` directly.
+
+Memory management per Liu's README: mini-batching (`batch_size`) and
+checkpointing (`checkpoint_segments`) — already wired per-misfit with his
+exact values in the runners.
+
 ## 5. Syncing the local ADFWI into GitHub
 
 The local (patched) ADFWI package is mirrored at `ADFWI_local/`. After any
