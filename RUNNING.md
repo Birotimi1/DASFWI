@@ -110,6 +110,38 @@ Two hard-won constraints baked in — do not remove:
 - `GCSafe` clamps trace-norm divisions (near-zero traces underflow float32
   into NaN).
 
+## 4b. Full-Marmousi2 DAS campaign (HPC; scripts in `hpc/marmousi_full_das/`)
+
+The 30-run campaign (6 misfits x 5 optimizers, Liu's exact Marmousi2 setup
+with receivers replaced by 4 vertical DAS fibers, 80 m gauge on the 40 m
+grid) is designed for HPC. Local machines only VERIFY the wiring:
+
+```bash
+python hpc/marmousi_full_das/generate_obs.py          # once (~1 min CPU)
+python hpc/marmousi_full_das/run_one.py --misfit gc --optimizer adam --smoke
+python hpc/marmousi_full_das/run_one.py --misfit sinkhorn --optimizer sgd  # full run: HPC only
+```
+
+- combos manifest: `hpc/marmousi_full_das/combos.txt` (one "misfit
+  optimizer" per line, for array jobs)
+- shared setup (Liu-verbatim constants, fibers, paths): `common.py`;
+  paths override via `ADFWI_ROOT`, `MARMOUSI_DIR`, `DASFWI_RESULTS`
+- Marmousi2 SEGY data lives OUTSIDE the repo (`../Data_downloads/marmousi2`,
+  never pushed); the repo's `ADFWI_local/` makes it self-contained on HPC
+- submission steps live in the LOCAL-ONLY `HPC_SUBMISSION.md` (gitignored)
+- optional per-run regularization: `--regularization
+  tikhonov1|tikhonov2|tv1|tv2` (Liu's 04-example settings)
+- device support (auto-picked cuda -> mps -> cpu; `--device` overrides):
+
+  | misfit | CUDA (HPC) | MPS (this Mac) | CPU |
+  |---|---|---|---|
+  | l2, gc, sinkhorn | yes | yes | yes |
+  | envelope, weci | yes | NO (MPS lacks complex FFT for the Hilbert transform) | yes |
+  | sdtw | yes | NO (pysdtw is cuda/cpu only) | yes (via `SdtwSafe`; upstream `Misfit_sdtw` demands CUDA on any build — device-vs-string comparison bug) |
+
+  So local smokes for envelope/weci/sdtw need `--device cpu`; all six run
+  natively on the HPC's CUDA GPUs (Liu's own environment).
+
 ## 5. Syncing the local ADFWI into GitHub
 
 The local (patched) ADFWI package is mirrored at `ADFWI_local/`. After any

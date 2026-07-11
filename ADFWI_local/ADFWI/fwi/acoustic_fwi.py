@@ -108,7 +108,11 @@ class AcousticFWI(torch.nn.Module):
         self.das_layer = das_layer
         self.obs_key   = obs_key
         if self.das_layer is not None:
-            channel_masks = self.das_layer.channel_mask(self.receiver_masks_2D.to(torch.bool))
+            # receiver_masks_2D lives on CPU; the layer's index buffers live on
+            # the run device (GPU) - indexing a CPU tensor with GPU indices is a
+            # RuntimeError on cuda/mps, so move the mask to the run device first
+            channel_masks = self.das_layer.channel_mask(
+                self.receiver_masks_2D.to(torch.bool).to(self.device))
             self.channel_masks_2D = channel_masks                                    # [shot, channel]
             self.channel_masks_3D = channel_masks.unsqueeze(1).expand(-1, self.propagator.nt, -1).to(self.device)  # [shot, time, channel]
             if self.waveform_mute_offset is not None:

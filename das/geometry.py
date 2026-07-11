@@ -238,3 +238,72 @@ class FiberGeometry:
         idx = self.idx_minus if sign < 0 else self.idx_plus
         z_index, _ = self.rcv_pos[int(idx[c])]
         return z_index * self.dz
+
+
+class MergedFiberGeometry:
+    """Several fibers as ONE geometry (duck-types FiberGeometry for
+    DASObservationLayer and the survey builders).
+
+    Receiver positions are the concatenation of each fiber's deduplicated
+    endpoint list (fibers at distinct x never share nodes; dedup is applied
+    again across fibers by exact grid index anyway), and the channel index
+    maps are offset into the merged list. Channels are ordered fiber by
+    fiber; ``fiber_of_channel`` maps each merged channel back to its fiber.
+
+    All fibers must share the same gauge length l.
+    """
+
+    def __init__(self, fibers):
+        if len(fibers) < 1:
+            raise ValueError("need at least one fiber")
+        if len({float(f.l) for f in fibers}) != 1:
+            raise ValueError("all fibers must share the same gauge length l")
+        self.fibers = list(fibers)
+        self.l = float(fibers[0].l)
+        self.dx = float(fibers[0].dx)
+        self.dz = float(fibers[0].dz)
+
+        rcv_pos = []
+        index_of = {}
+        idx_minus, idx_plus, fiber_id = [], [], []
+        e_x, e_z, channel_z = [], [], []
+        for fi, f in enumerate(self.fibers):
+            local_to_merged = []
+            for key in f.rcv_pos:
+                pos = index_of.get(key)
+                if pos is None:
+                    pos = len(rcv_pos)
+                    index_of[key] = pos
+                    rcv_pos.append(key)
+                local_to_merged.append(pos)
+            lut = np.asarray(local_to_merged, dtype=np.int64)
+            idx_minus.append(lut[f.idx_minus.numpy()])
+            idx_plus.append(lut[f.idx_plus.numpy()])
+            fiber_id.append(np.full(f.C, fi, dtype=np.int64))
+            e_x.append(f.e_x)
+            e_z.append(f.e_z)
+            channel_z.append(f.channel_z)
+
+        self.rcv_pos = rcv_pos
+        self.idx_minus = torch.as_tensor(np.concatenate(idx_minus),
+                                         dtype=torch.long)
+        self.idx_plus = torch.as_tensor(np.concatenate(idx_plus),
+                                        dtype=torch.long)
+        self.fiber_of_channel = torch.as_tensor(np.concatenate(fiber_id),
+                                                dtype=torch.long)
+        self.e_x = np.concatenate(e_x)
+        self.e_z = np.concatenate(e_z)
+        self.channel_z = np.concatenate(channel_z)
+
+    @property
+    def n_rcv(self):
+        return len(self.rcv_pos)
+
+    @property
+    def C(self):
+        return self.channel_z.shape[0]
+
+
+def merge_fibers(fibers):
+    """Convenience wrapper: FiberGeometry list -> MergedFiberGeometry."""
+    return MergedFiberGeometry(fibers)

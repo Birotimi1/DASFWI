@@ -11,6 +11,7 @@ ADFWI_SRC="$(cd "$REPO_DIR/../ADFWI" && pwd)"
 
 rsync -a --delete \
       --exclude="__pycache__" --exclude="*.pyc" --exclude=".DS_Store" \
+      --exclude=".claude" \
       "$ADFWI_SRC/ADFWI" "$REPO_DIR/ADFWI_local/"
 
 echo "--- changes vs last commit ---"

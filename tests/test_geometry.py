@@ -166,3 +166,48 @@ def test_field_mode_dedup_aligned():
                       dch=1.02, l=10.0, dx=5.0, dz=5.0, snap_to_nodes=True)
     assert g.n_rcv == g.C + 2
     assert np.all((g.idx_plus - g.idx_minus).numpy() == 2)
+
+
+# --------------------------------------------------------------------------- #
+# MergedFiberGeometry (multi-well)
+# --------------------------------------------------------------------------- #
+
+def test_merged_fibers():
+    from das.geometry import merge_fibers
+    ga = _aligned_geom(x_well=100.0, n_channels=10)
+    gb = _aligned_geom(x_well=300.0, n_channels=15)
+    m = merge_fibers([ga, gb])
+
+    assert m.C == ga.C + gb.C
+    assert m.n_rcv == ga.n_rcv + gb.n_rcv          # distinct x: no overlap
+    assert len(set(m.rcv_pos)) == m.n_rcv          # dedup preserved
+    # per-channel endpoint identity survives the merge
+    for c in range(m.C):
+        f = int(m.fiber_of_channel[c])
+        local = c - (0 if f == 0 else ga.C)
+        src = (ga, gb)[f]
+        assert m.rcv_pos[int(m.idx_minus[c])] == src.rcv_pos[int(src.idx_minus[local])]
+        assert m.rcv_pos[int(m.idx_plus[c])] == src.rcv_pos[int(src.idx_plus[local])]
+    # endpoint separation still l through the merged maps
+    kz = np.array([k for (k, _x) in m.rcv_pos])
+    sep = (kz[m.idx_plus.numpy()] - kz[m.idx_minus.numpy()]) * m.dz
+    assert np.allclose(sep, m.l)
+    # layer consumes the merged geometry directly
+    from das.das_layer import DASObservationLayer
+    layer = DASObservationLayer(m)
+    out = layer(torch.zeros(2, 8, m.n_rcv, dtype=torch.float64),
+                torch.randn(2, 8, m.n_rcv, dtype=torch.float64,
+                            generator=torch.Generator().manual_seed(0)))
+    assert out.shape == (2, 8, m.C)
+
+
+def test_merged_fibers_validation():
+    from das.geometry import merge_fibers
+    import pytest
+    with pytest.raises(ValueError):
+        merge_fibers([])
+    ga = _aligned_geom(x_well=100.0, n_channels=5)
+    gb = FiberGeometry(x_well=300.0, z_top=100.0, n_channels=5, l=20.0,
+                       dx=5.0, dz=10.0, snap_to_nodes=False)
+    with pytest.raises(ValueError):
+        merge_fibers([ga, gb])                     # mismatched gauge length

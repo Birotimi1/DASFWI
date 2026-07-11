@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# local-only HPC notes (do not push)
+HPC_SUBMISSION.md
+results/marmousi_full_das/
