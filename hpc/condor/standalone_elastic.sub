@@ -1,0 +1,29 @@
+# HTCondor submit file: ONE standalone elastic (Vp+Vs) DAS-FWI run.
+#
+# From the DASFWI repo root (after mkdir -p logs):
+#   condor_submit hpc/condor/standalone_elastic.sub
+#   condor_submit hpc/condor/standalone_elastic.sub misfit=gc optimizer=sgd
+
+misfit          = gc
+optimizer       = adam
+extra           =
+
+universe        = vanilla
+executable      = hpc/condor/run_standalone.sh
+arguments       = elastic --misfit $(misfit) --optimizer $(optimizer) $(extra)
+initialdir      = .
+
+request_gpus    = 1
+request_cpus    = 4
+request_memory  = 24GB
+request_disk    = 8GB
+getenv          = True
+
+log             = logs/elastic_$(Cluster).log
+output          = logs/elastic_$(misfit)_$(optimizer)_$(Cluster).out
+error           = logs/elastic_$(misfit)_$(optimizer)_$(Cluster).err
+
+should_transfer_files = IF_NEEDED
+when_to_transfer_output = ON_EXIT
+
+queue 1

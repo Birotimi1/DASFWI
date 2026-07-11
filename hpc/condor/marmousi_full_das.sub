@@ -1,0 +1,38 @@
+# HTCondor submit file: full-Marmousi2 DAS campaign (30 jobs, 1 GPU each).
+#
+# From the DASFWI repo root on the cluster:
+#   mkdir -p logs                                  # condor needs it to exist
+#   python hpc/marmousi_full_das/generate_obs.py   # ONCE, before submitting
+#   condor_submit hpc/condor/marmousi_full_das.sub
+#   condor_q                                       # watch progress
+#
+# Assumes a shared filesystem (repo + Marmousi data visible on the execute
+# nodes). Each line of combos.txt is "<misfit> <optimizer>"; the whole line
+# is passed as $(combo) and split by the wrapper - no reliance on condor's
+# multi-column from-file parsing.
+
+universe        = vanilla
+executable      = hpc/condor/run_combo.sh
+arguments       = $(combo)
+initialdir      = .
+
+request_gpus    = 1
+request_cpus    = 4
+request_memory  = 16GB
+request_disk    = 8GB
+
+# inherit the submit shell's environment (conda paths etc.); add or replace
+# specific variables here if needed, e.g.:
+# environment = "PYTHON_BIN=/path/to/envs/dasfwi/bin/python MARMOUSI_DIR=/path/to/marmousi2 DASFWI_RESULTS=/scratch/user/marmousi_full_das"
+getenv          = True
+
+# $(Process) 0..29 maps to the line number in combos.txt (0-based); the
+# job's own stdout also prints its misfit/optimizer on the first line
+log             = logs/campaign_$(Cluster).log
+output          = logs/campaign_$(Cluster).$(Process).out
+error           = logs/campaign_$(Cluster).$(Process).err
+
+should_transfer_files = IF_NEEDED
+when_to_transfer_output = ON_EXIT
+
+queue combo from hpc/marmousi_full_das/combos.txt
