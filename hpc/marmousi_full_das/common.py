@@ -79,40 +79,8 @@ from ADFWI.fwi.regularization import (regularization_Tikhonov_1order,
 
 from das.geometry import FiberGeometry, merge_fibers
 from das.das_layer import DASObservationLayer
-from inversion.run_acoustic_matrix import SinkhornSafe
+from inversion.safe_misfits import SinkhornSafe, SdtwSafe
 
-import pysdtw
-
-
-class SdtwSafe(Misfit_sdtw):
-    """Misfit_sdtw with a correct device test. Upstream decides
-    use_cuda = (device != "cpu") where device is a torch.device OBJECT -
-    the comparison to a string is always unequal in torch 2.1, so pysdtw
-    demands CUDA even on a CPU build (CUDA-masked bug; Liu only ran CUDA).
-    Math identical; use_cuda derives from device.type. pysdtw itself
-    supports cuda and cpu only (no MPS)."""
-
-    def forward(self, obs, syn):
-        device = obs.device
-        mask = ~((torch.sum(torch.abs(obs), axis=1) == 0)
-                 * (torch.sum(torch.abs(syn), axis=1) == 0))
-        fun = pysdtw.distance.pairwise_l2_squared_exact
-        rsd = torch.zeros((obs.shape[0], obs.shape[2]),
-                          device=device, dtype=obs.dtype)
-        sdtw = pysdtw.SoftDTW(gamma=self.gamma, dist_func=fun,
-                              use_cuda=(device.type == "cuda"))
-        for ishot in range(obs.shape[0]):
-            trace_idx = torch.argwhere(mask[ishot]).reshape(-1)
-            obs_shot = obs[ishot, ::self.sparse_sampling,
-                           trace_idx].squeeze().T.unsqueeze(2)
-            syn_shot = syn[ishot, ::self.sparse_sampling,
-                           trace_idx].squeeze().T.unsqueeze(2)
-            sdtw_obs = sdtw(obs_shot, obs_shot)
-            sdtw_syn = sdtw(syn_shot, syn_shot)
-            sdtw_obs_syn = sdtw(obs_shot, syn_shot)
-            std = sdtw_obs_syn - 0.5 * (sdtw_obs + sdtw_syn)
-            rsd[ishot, trace_idx] = std.reshape(1, -1).to(rsd.dtype)
-        return torch.sum(rsd * self.dt)
 
 # ---------------------------------------------------------------------------
 # Liu-verbatim constants

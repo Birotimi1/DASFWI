@@ -1,0 +1,10 @@
+{
+  "tag": "conv_gc_adam_smoke",
+  "device": "mps",
+  "iterations": 2,
+  "runtime_h": 0.011,
+  "rms_init": 356.61160599766305,
+  "rms_final": 358.2727815856749,
+  "update_corr": -0.06689520474503834,
+  "losses_finite": true
+}

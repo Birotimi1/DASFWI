@@ -66,49 +66,9 @@ GRAD_MASK_TOP = 10                        # Liu's examples: mask top 10 rows
 FIBER_X_INDEX = 150                       # x_well 750 m / dx 5
 
 
-class SinkhornSafe(Misfit_wasserstein_sinkhorn):
-    """Misfit_wasserstein_sinkhorn with consistent dtypes. Upstream crashes
-    in EVERY dtype: the time-coordinate tensor is built float64, promoting
-    the per-trace losses, while the residual accumulator is hard-coded
-    float32 (index_put dtype mismatch). Math identical; the time axis and
-    the accumulator follow the input dtype."""
-
-    # relative per-trace amplitude threshold (~-60 dB of the gather peak)
-    DEAD_TRACE_REL = 1e-3
-
-    def forward(self, obs, syn):
-        # SCALING: run this misfit with waveform_normalize=False. The stock
-        # per-trace max-abs normalization divides numerically-dead fiber
-        # traces (~1e-35 float32 precursor noise, NOT exactly zero) by their
-        # ~1e-38 maxima; the traces then look like live O(1) signal (so no
-        # in-misfit test can identify them) and the normalization BACKWARD
-        # overflows float32 into inf/NaN across the whole model gradient
-        # (diagnosed stage by stage). Instead: one DETACHED global scale per
-        # shot from the observed gather, applied to both sides - preserves
-        # relative trace amplitudes, backward-safe (scalar constant), and
-        # keeps dead traces dead so the relative amplitude mask works.
-        scale = obs.abs().amax(dim=(1, 2), keepdim=True).detach().clamp_min(1e-300)
-        obs = obs / scale
-        syn = syn / scale
-
-        o_amp = obs.abs().amax(dim=1)                       # [S, C]
-        s_amp = syn.abs().amax(dim=1)
-        mask = ((o_amp > self.DEAD_TRACE_REL * o_amp.amax(dim=1, keepdim=True))
-                & (s_amp > self.DEAD_TRACE_REL * s_amp.amax(dim=1, keepdim=True)))
-        rsd = torch.zeros((obs.shape[0], obs.shape[2]),
-                          device=obs.device, dtype=obs.dtype)
-        loss_fn = SamplesLoss(loss=self.loss_method, p=self.p,
-                              blur=self.blur, scaling=self.scaling)
-        for ishot in range(obs.shape[0]):
-            idx = torch.argwhere(mask[ishot]).reshape(-1)
-            o = obs[ishot, ::self.sparse_sampling, idx].T   # [trace, samples]
-            s = syn[ishot, ::self.sparse_sampling, idx].T
-            t = (torch.arange(o.shape[1], device=obs.device, dtype=obs.dtype)
-                 * self.dt).reshape(1, -1).expand_as(o)
-            o2 = torch.stack((t, o), dim=-1)                # [trace, n, 2]
-            s2 = torch.stack((t, s), dim=-1)
-            rsd[ishot, idx] = loss_fn(o2, s2).reshape(-1).to(obs.dtype)
-        return torch.sum(rsd * rsd * self.dt)
+# SinkhornSafe lives in inversion/safe_misfits.py (shared by the HPC
+# campaign scripts); re-exported here for backward compatibility.
+from inversion.safe_misfits import SinkhornSafe  # noqa: F401,E402
 
 
 def build_misfit(name, total_iters):

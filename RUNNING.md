@@ -142,6 +142,34 @@ python hpc/marmousi_full_das/run_one.py --misfit sinkhorn --optimizer sgd  # ful
   So local smokes for envelope/weci/sdtw need `--device cpu`; all six run
   natively on the HPC's CUDA GPUs (Liu's own environment).
 
+## 4c. Standalone one-file scripts (novice-friendly; acoustic and elastic)
+
+For anyone who wants to run ONE inversion without touching the campaign
+machinery — Liu-example style, every parameter in a marked block at the top
+of the file, linear flow, one file to read:
+
+```bash
+python hpc/standalone/run_acoustic_das.py --misfit gc --optimizer adam
+python hpc/standalone/run_acoustic_das.py --conventional   # pressure-receiver
+                                                           # control (A/B)
+python hpc/standalone/run_elastic_das.py  --misfit gc --optimizer adam
+# add --smoke to either for a 2-iteration wiring check
+```
+
+- Acoustic: Liu's Marmousi2 acoustic setup, DAS strain rate on 4 vertical
+  fibers (80 m gauge), patched AcousticFWI; `--conventional` flips to Liu's
+  original surface pressure line — the direct observable A/B on identical
+  everything else.
+- Elastic: Liu's iso-elastic Marmousi2 setup (45 m grid, f0=3 Hz, constant
+  rho=2450, water rows pinned+masked, fd_order=4); the inversion loop is in
+  the file (ElasticFWI is read-only upstream) and includes the mandatory
+  Poisson clamp (vs <= vp/1.5).
+- Both: same six misfits and five optimizers as the campaign, Liu's exact
+  constructor settings; model source switchable in one marked block
+  (Marmousi2 / synthetic / field data — see CASE A/B/C comments).
+- Portable misfit fixes now live in `inversion/safe_misfits.py`
+  (GCMisfit64, SinkhornSafe, SdtwSafe) and are shared by all runners.
+
 ## 5. Syncing the local ADFWI into GitHub
 
 The local (patched) ADFWI package is mirrored at `ADFWI_local/`. After any
