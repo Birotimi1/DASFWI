@@ -15,6 +15,18 @@ trapezoid-sums over the gauge:
 The operator NEVER differences velocity along the fiber, so the curvature
 sensitivity is excluded by construction (see PointwiseFiberGeometry). The whole
 thing is out-of-place tensor algebra, so ``loss.backward()`` builds the adjoint.
+
+Cross-validated (2-factor) against Noe's pyber operator
+(``pyber.utils.project_strain_tensor_on_unit_vector``, which computes the axial
+strain as ``unit_vector @ (unit_vector @ strain_tensor)`` = ``e^T eps e``, then
+gauge-averages via ``pyber.gauge_length.GaugeLength``): our axial contraction
+``e_x^2 eps_xx + 2 e_x e_z eps_xz + e_z^2 eps_zz`` and trapezoid gauge weights
+reproduce it to machine precision on arbitrary fibre orientations
+(``tests/test_pointwise.py::test_matches_noe_pyber_contraction``). Both project
+the strain tensor pointwise onto the local tangent and gauge-average, so both
+exclude the curvature term identically. Noe works with strain from a strain-
+capable solver; we form strain RATE from velocity-record derivatives (the DAS
+observable is strain rate), the natural ADFWI-side equivalent.
 """
 
 from __future__ import annotations

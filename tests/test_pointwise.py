@@ -170,6 +170,46 @@ def test_linearity_and_grad():
     assert u.grad.abs().max() > 0 and w.grad.abs().max() > 0
 
 
+# --------------------------------------------------------------------------- #
+# 5. cross-validation against Noe's pyber operator (2-factor check)
+# --------------------------------------------------------------------------- #
+
+def _noe_project(unit_vector, strain_tensor):
+    """Noe's exact operator, copied verbatim from pyber
+    (utils.project_strain_tensor_on_unit_vector): the axial strain is
+    ``e^T eps e`` computed as ``unit_vector @ (unit_vector @ strain_tensor)``.
+    strain_tensor has shape (D, D, npts)."""
+    return unit_vector @ (unit_vector @ strain_tensor)
+
+
+def test_matches_noe_pyber_contraction():
+    # Our E5 core contraction must reproduce Noe's pyber axial-strain operator
+    # to machine precision. We build a linear velocity field (constant, known
+    # strain-rate tensor -> our FD is exact), run our full E5 pipeline, and
+    # independently contract the SAME tensor with Noe's formula, assembling the
+    # 3x3 tensor exactly as pyber does ([[exx,exy,exz],[exy,eyy,eyz],
+    # [exz,eyz,ezz]]) with the in-plane (x,z) components and y = 0.
+    A, B, C, D = 8e-4, -2e-4, 6e-4, -5e-4     # vx=Ax+Bz, vz=Cx+Dz
+    exx, ezz, exz = A, D, 0.5 * (B + C)       # strain-rate tensor components
+    for dip in (0.0, 20.0, 55.0, 80.0):
+        g = PointwiseFiberGeometry.tilted(300.0, 130.0, dip_deg=dip,
+                                          length=180.0, n_channels=12, dch=5.0,
+                                          l=10.0, dx=DX, dz=DZ, N_g=5)
+        layer = DASPointwiseLayer(g)
+        u, w = records(g, lambda x, z, t: A * x + B * z,
+                       lambda x, z, t: C * x + D * z)
+        ours = layer(u, w).numpy()[0, 0]                       # [C]
+
+        th = np.radians(dip)
+        e3d = np.array([np.sin(th), 0.0, np.cos(th)])          # (x, y, z)
+        tensor = np.array([[exx, 0.0, exz],
+                           [0.0, 0.0, 0.0],
+                           [exz, 0.0, ezz]])[:, :, None]        # (3,3,1)
+        noe = _noe_project(e3d, tensor)[0]
+        assert np.allclose(ours, noe, atol=1e-12), (
+            f"dip={dip}: E5 {ours[0]:.8e} != Noe pyber {noe:.8e}")
+
+
 def test_strain_option():
     g = PointwiseFiberGeometry.vertical(250.0, 100.0, 200.0, 15, 5.0, 10.0,
                                         dx=DX, dz=DZ, N_g=5)
