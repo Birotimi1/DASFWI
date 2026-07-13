@@ -178,9 +178,14 @@ launching them concurrently; the propagators' `gpu_num`/`cpu_num` arguments
 are stored but never used (multi-GPU is upstream future work). Ours follows
 the same one-process-one-GPU rule, three ways:
 
-- **HTCondor** (`hpc/condor/*.sub`): `request_gpus = 1` per job; condor
-  sets `CUDA_VISIBLE_DEVICES`, so the scripts' auto-picked `"cuda"` IS the
-  assigned card — Liu's pinning, scheduler-managed.
+- **Slurm** (`hpc/slurm/`, the primary scheduler): `--gres=gpu:1` per job;
+  Slurm sets `CUDA_VISIBLE_DEVICES`, so the scripts' auto-picked `"cuda"` IS
+  the assigned card. `campaign.slurm` is a 40-task array (one combo per
+  task); `run.slurm` does single standalone/elastic/field/ladder runs via
+  `--export`. Edit `hpc/slurm/env.sh` once for your cluster and set the
+  partition/account `#SBATCH` lines. See `hpc/slurm/README.md`.
+- **HTCondor** (`hpc/condor/*.sub`, kept for reference): `request_gpus = 1`
+  per job — same one-process-one-GPU strategy, Condor-managed.
 - **Interactive multi-GPU node**: `./hpc/launch_gpus.sh <NGPU>` fans the
   campaign combos across cards in Liu-style batches (combo i on
   cuda:(i mod NGPU), NGPU at a time). `DRY_RUN=1` prints the plan.
