@@ -79,7 +79,8 @@ from ADFWI.fwi.regularization import (regularization_Tikhonov_1order,
 
 from das.geometry import FiberGeometry, merge_fibers
 from das.das_layer import DASObservationLayer
-from inversion.safe_misfits import SinkhornSafe, SdtwSafe
+from inversion.safe_misfits import (SinkhornSafe, SdtwSafe, TravelTimeSafe,
+                                    make_nim)
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +122,8 @@ OPTIMIZERS = {
                                                 momentum_decay=4e-3),
 }
 
-MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci")
+MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci",
+           "traveltime", "nim")
 
 # per-misfit run settings (batch_size, checkpoint_segments,
 # waveform_normalize), copied from Liu's misfit-test scripts; sinkhorn runs
@@ -129,12 +131,15 @@ MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci")
 # max-normalization backward overflows float32 on numerically-dead fiber
 # traces - see SinkhornSafe)
 MISFIT_RUN_SETTINGS = {
-    "l2":       dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "envelope": dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "gc":       dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "sdtw":     dict(batch_size=5,    checkpoint_segments=2, normalize=True),
-    "sinkhorn": dict(batch_size=2,    checkpoint_segments=2, normalize=False),
-    "weci":     dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "l2":         dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "envelope":   dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "gc":         dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "sdtw":       dict(batch_size=5,    checkpoint_segments=2, normalize=True),
+    "sinkhorn":   dict(batch_size=2,    checkpoint_segments=2, normalize=False),
+    "weci":       dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    # traveltime is O(shots*receivers) conv1d -> batch to cap memory (still slow)
+    "traveltime": dict(batch_size=5,    checkpoint_segments=2, normalize=True),
+    "nim":        dict(batch_size=None, checkpoint_segments=1, normalize=True),
 }
 
 
@@ -169,6 +174,12 @@ def build_misfit(name, iterations=ITERATIONS):
         # counter == iteration ONLY because batch_size=None for weci
         return Misfit_weighted_ECI(p=1.5, dt=1, max_iter=iterations,
                                    instaneous_phase=False)
+    if name == "traveltime":
+        # cross-correlation traveltime (cycle-skipping robust); slow
+        return TravelTimeSafe(dt=DT, beta=10)
+    if name == "nim":
+        # normalized integration = Wasserstein-1 at p=1 (cycle-skipping robust)
+        return make_nim(p=1, trans_type="linear", theta=1.0, dt=DT)
     raise ValueError(f"unknown misfit {name!r}")
 
 

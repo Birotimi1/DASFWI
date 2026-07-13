@@ -28,3 +28,13 @@ weci adagrad
 weci adam
 weci adamw
 weci nadam
+traveltime sgd
+traveltime adagrad
+traveltime adam
+traveltime adamw
+traveltime nadam
+nim sgd
+nim adagrad
+nim adam
+nim adamw
+nim nadam

@@ -62,7 +62,8 @@ from ADFWI.fwi import AcousticFWI
 from ADFWI.fwi.misfit import (Misfit_waveform_L2, Misfit_envelope,
                               Misfit_global_correlation, Misfit_weighted_ECI)
 
-from inversion.safe_misfits import SinkhornSafe, SdtwSafe
+from inversion.safe_misfits import (SinkhornSafe, SdtwSafe, TravelTimeSafe,
+                                    make_nim)
 from forge.field_loader import load_forge_field, summarize
 
 # ============================================================================
@@ -90,7 +91,8 @@ GRAD_MASK_TOP = 8
 SCHEDULER = dict(step_size=100, gamma=0.75)
 CACHE_EVERY = 10
 
-MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci")
+MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci",
+           "traveltime", "nim")
 WELLS = ("78A-32", "78B-32")
 
 
@@ -108,15 +110,21 @@ def build_misfit(name, iterations, dt):
     if name == "weci":
         return Misfit_weighted_ECI(p=1.5, dt=1, max_iter=iterations,
                                    instaneous_phase=False)
+    if name == "traveltime":
+        return TravelTimeSafe(dt=dt, beta=10)
+    if name == "nim":
+        return make_nim(p=1, trans_type="linear", theta=1.0, dt=dt)
     raise ValueError(f"unknown misfit {name!r}")
 
 RUN_SETTINGS = {
-    "l2":       dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "envelope": dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "gc":       dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "sdtw":     dict(batch_size=5,    checkpoint_segments=2, normalize=True),
-    "sinkhorn": dict(batch_size=2,    checkpoint_segments=2, normalize=False),
-    "weci":     dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "l2":         dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "envelope":   dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "gc":         dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "sdtw":       dict(batch_size=5,    checkpoint_segments=2, normalize=True),
+    "sinkhorn":   dict(batch_size=2,    checkpoint_segments=2, normalize=False),
+    "weci":       dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "traveltime": dict(batch_size=5,    checkpoint_segments=2, normalize=True),
+    "nim":        dict(batch_size=None, checkpoint_segments=1, normalize=True),
 }
 
 OPTIMIZERS = {
@@ -163,6 +171,10 @@ def main():
     ap.add_argument("--nt", type=int, default=NT_MODEL)
     ap.add_argument("--f0", type=float, default=F0)
     ap.add_argument("--device", default=None)
+    ap.add_argument("--starting", default="gradient",
+                    choices=("gradient", "traveltime"),
+                    help="starting model: blind 1-D gradient, or data-driven "
+                         "first-break traveltime tomography")
     ap.add_argument("--smoke", action="store_true", help="2-iteration check")
     args = ap.parse_args()
 
@@ -184,8 +196,33 @@ def main():
     g = bundle["grid"]
     nz, nx = g["nz"], g["nx"]
 
-    # [4] starting model (1-D gradient; no true model exists for field data)
-    vp_init = gradient_start_model(nz, nx, g["dz"])
+    # [4] starting model. Default is a blind 1-D gradient; "traveltime" builds
+    # a data-driven v(z) from first breaks of the nearest-offset shot (VSP
+    # check-shot method) -- a far better basin for FWI on an unknown site.
+    if args.starting == "traveltime":
+        from forge.traveltime_tomography import starting_model_from_gathers
+        obs = np.asarray(bundle["obs_data"].data["strain_rate"])   # [S, nt, C]
+        sx = np.asarray(bundle["src_x_grid"])
+        near = int(np.argmin(np.abs(sx - bundle["well_x_index"])))  # min offset
+        offset = abs(float(sx[near] - bundle["well_x_index"])) * g["dx"]
+        vp_init, z_prof, v_prof, _ = starting_model_from_gathers(
+            obs[near], g["dt"], np.asarray(bundle["channel_z_grid"]),
+            x_offset=offset, nz=nz, nx=nx, dz=g["dz"],
+            v_bounds=VP_BOUND, min_time_s=2 * g["dt"])
+        # a STARTING model must be smooth/long-wavelength: heavy vertical
+        # smoothing removes pick noise (and the sharp features that would make
+        # some synthetic traces dead -> normalization NaNs). Best results need
+        # a NEAR-offset shot; with only far-offset shots the picks are weak.
+        from scipy.ndimage import gaussian_filter
+        vp_init = gaussian_filter(vp_init, sigma=(max(3.0, 60.0 / g["dz"]), 0))
+        vp_init = np.clip(vp_init, *VP_BOUND)
+        print(f"traveltime starting model: shot {near} offset {offset:.0f} m, "
+              f"v(z) {v_prof.min():.0f}-{v_prof.max():.0f} m/s over "
+              f"{z_prof.min():.0f}-{z_prof.max():.0f} m "
+              f"(nearest offset {offset:.0f} m; use a near-offset shot for a "
+              f"reliable profile)", flush=True)
+    else:
+        vp_init = gradient_start_model(nz, nx, g["dz"])
 
     # [5] inversion (Liu's machinery through the T5-patched AcousticFWI)
     rho = np.power(vp_init, 0.25) * 310.0
@@ -238,7 +275,7 @@ def main():
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
     ext = [0, (nx - 1) * g["dx"] / 1000, (nz - 1) * g["dz"] / 1000, 0]
-    for ax, (d, ttl) in zip(axes[:2], [(vp_init, "initial (1-D gradient)"),
+    for ax, (d, ttl) in zip(axes[:2], [(vp_init, f"initial ({args.starting})"),
                                        (vp_final, f"inverted {tag}")]):
         im = ax.imshow(d, extent=ext, cmap="jet",
                        vmin=VP_BOUND[0], vmax=VP_BOUND[1])

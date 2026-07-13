@@ -70,7 +70,8 @@ from ADFWI.fwi.misfit import (Misfit_waveform_L2, Misfit_envelope,
 # dasfwi modules (this repo): the DAS operator + hardened misfits
 from das.geometry import FiberGeometry, merge_fibers
 from das.das_layer import DASObservationLayer
-from inversion.safe_misfits import SinkhornSafe, SdtwSafe
+from inversion.safe_misfits import (SinkhornSafe, SdtwSafe, TravelTimeSafe,
+                                    make_nim)
 
 # ============================================================================
 # [1] PARAMETERS - everything a user should ever need to touch
@@ -140,11 +141,14 @@ def load_model_pair():
 # ============================================================================
 # helpers (nothing below needs editing for routine runs)
 # ============================================================================
-MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci")
+MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci",
+           "traveltime", "nim")
 
 def build_misfit(name, iterations):
     """Liu's misfit constructions; hardened variants where upstream has
-    portability bugs (see inversion/safe_misfits.py)."""
+    portability bugs (see inversion/safe_misfits.py). traveltime and nim are
+    the cycle-skipping-robust additions (traveltime = cross-correlation time
+    shift; nim = normalized integration = Wasserstein-1 at p=1)."""
     if name == "l2":
         return Misfit_waveform_L2(dt=DT)
     if name == "envelope":
@@ -158,17 +162,24 @@ def build_misfit(name, iterations):
     if name == "weci":
         return Misfit_weighted_ECI(p=1.5, dt=1, max_iter=iterations,
                                    instaneous_phase=False)
+    if name == "traveltime":
+        return TravelTimeSafe(dt=DT, beta=10)
+    if name == "nim":
+        return make_nim(p=1, trans_type="linear", theta=1.0, dt=DT)
     raise ValueError(f"unknown misfit {name!r}")
 
 # per-misfit run settings (Liu's batch/checkpoint choices; sinkhorn scales
 # itself globally, so per-trace normalization is off for it)
 RUN_SETTINGS = {
-    "l2":       dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "envelope": dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "gc":       dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "sdtw":     dict(batch_size=5,    checkpoint_segments=2, normalize=True),
-    "sinkhorn": dict(batch_size=2,    checkpoint_segments=2, normalize=False),
-    "weci":     dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "l2":         dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "envelope":   dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "gc":         dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "sdtw":       dict(batch_size=5,    checkpoint_segments=2, normalize=True),
+    "sinkhorn":   dict(batch_size=2,    checkpoint_segments=2, normalize=False),
+    "weci":       dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    # traveltime normalizes internally and is O(shots*receivers) slow -> batch
+    "traveltime": dict(batch_size=5,    checkpoint_segments=2, normalize=True),
+    "nim":        dict(batch_size=None, checkpoint_segments=1, normalize=True),
 }
 
 OPTIMIZERS = {   # Liu's exact constructors (03-optimizer-test examples)

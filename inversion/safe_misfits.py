@@ -26,6 +26,22 @@ SdtwSafe       - soft-DTW divergence. Upstream decides use_cuda by
                  (always unequal), demanding CUDA on any build; here
                  use_cuda derives from device.type. pysdtw supports cuda
                  and cpu only (no Apple MPS).
+TravelTimeSafe - cross-correlation traveltime misfit (cycle-skipping
+                 robust). Upstream hard-codes a float32 residual
+                 accumulator AND a float32 lag axis, crashing on float64
+                 CPU input; here both follow the input dtype. NOTE: it is
+                 O(n_shots * n_receivers) conv1d calls per evaluation and
+                 is genuinely slow on dense channel counts -- Liu marks it
+                 experimental; decimate channels / shots for it.
+make_nim       - Normalized Integration Method (= Wasserstein-1 for p=1),
+                 also cycle-skipping robust. Misfit_NIM is a
+                 torch.autograd.Function (hand-coded backward), invoked via
+                 .apply(syn, obs, p, trans_type, theta); the stock
+                 AcousticFWI.calculate_loss already dispatches it, but
+                 custom loops must use apply_misfit() below.
+apply_misfit   - dispatcher: calls .apply(...) for Misfit_NIM, else
+                 .forward(syn, obs). Use it in any custom (non-AcousticFWI)
+                 inversion loop so NIM and the plain misfits are uniform.
 """
 
 import torch
@@ -34,7 +50,8 @@ import pysdtw
 from geomloss import SamplesLoss
 
 from ADFWI.fwi.misfit import (Misfit_global_correlation,
-                              Misfit_wasserstein_sinkhorn, Misfit_sdtw)
+                              Misfit_wasserstein_sinkhorn, Misfit_sdtw,
+                              Misfit_traveltime, Misfit_NIM)
 
 
 class GCMisfit64(Misfit_global_correlation):
@@ -122,3 +139,44 @@ class SdtwSafe(Misfit_sdtw):
             std = sdtw_obs_syn - 0.5 * (sdtw_obs + sdtw_syn)
             rsd[ishot, trace_idx] = std.reshape(1, -1).to(rsd.dtype)
         return torch.sum(rsd * self.dt)
+
+
+class TravelTimeSafe(Misfit_traveltime):
+    """Cross-correlation traveltime misfit; accumulator and lag axis follow
+    the input dtype. Same softmax-based differentiable time shift as upstream.
+    O(n_shots * n_receivers) conv1d calls -- slow on dense channels."""
+
+    def forward(self, obs, syn):
+        import torch.nn.functional as F
+        srcn, nt, rcvn = obs.shape
+        device, dtype = obs.device, obs.dtype
+        obs = obs / torch.max(torch.abs(obs), dim=1, keepdim=True)[0]
+        syn = syn / torch.max(torch.abs(syn), dim=1, keepdim=True)[0]
+        lags = torch.arange(-nt + 1, nt, device=device, dtype=dtype)
+        rsd = torch.zeros((srcn, rcvn), device=device, dtype=dtype)
+        for ishot in range(srcn):
+            for ircv in range(rcvn):
+                w1 = obs[ishot, :, ircv]
+                w2 = syn[ishot, :, ircv]
+                cc = F.conv1d(w1.view(1, 1, -1), w2.view(1, 1, -1),
+                              padding=nt - 1).view(-1)
+                weights = F.softmax(self.beta * cc, dim=0)
+                rsd[ishot, ircv] = torch.abs((weights * lags).sum() * self.dt)
+        return torch.sum(rsd)
+
+
+def make_nim(p=1, trans_type="linear", theta=1.0, dt=1.0):
+    """A configured Misfit_NIM (Normalized Integration Method; = Wasserstein-1
+    when p=1). It is a torch.autograd.Function -- pass the returned instance as
+    a loss_fn to AcousticFWI (calculate_loss dispatches it) or, in custom
+    loops, evaluate it via apply_misfit()."""
+    return Misfit_NIM(p=p, trans_type=trans_type, theta=theta, dt=dt)
+
+
+def apply_misfit(misfit, syn, obs):
+    """Evaluate any misfit uniformly in a custom loop. Misfit_NIM is an
+    autograd.Function invoked via .apply(syn, obs, p, trans_type, theta);
+    everything else is a Misfit with .forward(syn, obs)."""
+    if isinstance(misfit, Misfit_NIM):
+        return misfit.apply(syn, obs, misfit.p, misfit.trans_type, misfit.theta)
+    return misfit.forward(syn, obs)

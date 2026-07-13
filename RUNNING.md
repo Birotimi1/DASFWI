@@ -190,6 +190,30 @@ Memory management per Liu's README: mini-batching (`batch_size`) and
 checkpointing (`checkpoint_segments`) — already wired per-misfit with his
 exact values in the runners.
 
+## 4e. Cycle-skipping robustness: misfits, ladder, traveltime starter
+
+The autograd does NOT relax FWI's good-starting-model requirement (that is
+orthogonal to how the gradient is computed); the misfit + multiscale machinery
+does. Three tools for this:
+
+- **8 misfits** now: the 6 original plus `traveltime` (cross-correlation time
+  shift) and `nim` (Normalized Integration = Wasserstein-1 at p=1), both
+  cycle-skipping robust. Available in every runner (`--misfit traveltime|nim`)
+  and the 40-combo campaign. `traveltime` is O(shots*receivers) conv1d and
+  slow on dense channels; decimate. NIM is a torch.autograd.Function — custom
+  loops evaluate it via `inversion.safe_misfits.apply_misfit`.
+- **Starting-model degradation ladder** (`inversion/run_starting_model_ladder.py`):
+  inverts the same data from progressively worse starting models (mild ->
+  strong smooth -> 1-D gradient -> constant) with each misfit, SGD fixed, and
+  reports a recovery heatmap — quantifies each misfit's basin of attraction.
+  `--quick` for local wiring; `--misfits gc,envelope,nim,...` to choose the set.
+- **First-break traveltime starting model** (`forge/traveltime_tomography.py`):
+  STA/LTA first-break picking + VSP check-shot v(z) inversion (straight-ray
+  deskew, physical surface anchor) -> a data-driven starting model. Use it in
+  the field script with `--starting traveltime` (needs a NEAR-offset shot for a
+  reliable profile; a downhole fiber constrains only the depths it spans, so
+  the overburden above the fiber top gets the average velocity to that top).
+
 ## 5. Syncing the local ADFWI into GitHub
 
 The local (patched) ADFWI package is mirrored at `ADFWI_local/`. After any

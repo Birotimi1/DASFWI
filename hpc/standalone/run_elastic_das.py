@@ -77,7 +77,8 @@ from ADFWI.fwi.misfit import (Misfit_waveform_L2, Misfit_envelope,
 
 from das.geometry import FiberGeometry, merge_fibers
 from das.das_layer import DASObservationLayer
-from inversion.safe_misfits import SinkhornSafe, SdtwSafe
+from inversion.safe_misfits import (SinkhornSafe, SdtwSafe, TravelTimeSafe,
+                                    make_nim, apply_misfit)
 
 # ============================================================================
 # [1] PARAMETERS
@@ -111,17 +112,20 @@ SGD_LR_SCALE = 0.01                # sgd: peak update = SGD_LR_SCALE * vmax
 SCHEDULER = dict(step_size=100, gamma=0.75)
 CACHE_EVERY = 10
 
-MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci")
+MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci",
+           "traveltime", "nim")
 
 # per-misfit shot batching (misfit calls per iteration = ceil(n_shots/batch));
 # sinkhorn scales itself -> per-trace normalization off (see safe_misfits)
 RUN_SETTINGS = {
-    "l2":       dict(batch_size=None, normalize=True),
-    "envelope": dict(batch_size=None, normalize=True),
-    "gc":       dict(batch_size=None, normalize=True),
-    "sdtw":     dict(batch_size=5,    normalize=True),
-    "sinkhorn": dict(batch_size=2,    normalize=False),
-    "weci":     dict(batch_size=None, normalize=True),
+    "l2":         dict(batch_size=None, normalize=True),
+    "envelope":   dict(batch_size=None, normalize=True),
+    "gc":         dict(batch_size=None, normalize=True),
+    "sdtw":       dict(batch_size=5,    normalize=True),
+    "sinkhorn":   dict(batch_size=2,    normalize=False),
+    "weci":       dict(batch_size=None, normalize=True),
+    "traveltime": dict(batch_size=5,    normalize=True),
+    "nim":        dict(batch_size=None, normalize=True),
 }
 
 OPTIMIZERS = {   # Liu's constructors; "sgd" pairs with normalized gradients
@@ -151,6 +155,10 @@ def build_misfit(name, iterations):
     if name == "weci":
         return Misfit_weighted_ECI(p=1.5, dt=1, max_iter=iterations,
                                    instaneous_phase=False)
+    if name == "traveltime":
+        return TravelTimeSafe(dt=DT, beta=10)
+    if name == "nim":
+        return make_nim(p=1, trans_type="linear", theta=1.0, dt=DT)
     raise ValueError(f"unknown misfit {name!r}")
 
 
@@ -295,7 +303,7 @@ def main():
             o = obs[shot_index]
             if settings["normalize"]:
                 syn, o = normalize_traces(syn), normalize_traces(o)
-            loss = misfit.forward(syn, o)
+            loss = apply_misfit(misfit, syn, o)   # dispatches NIM's .apply
             loss.backward()
             loss_iter += float(loss)
         with torch.no_grad():
