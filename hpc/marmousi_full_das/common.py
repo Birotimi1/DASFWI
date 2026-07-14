@@ -80,7 +80,8 @@ from ADFWI.fwi.regularization import (regularization_Tikhonov_1order,
 from das.geometry import FiberGeometry, merge_fibers
 from das.das_layer import DASObservationLayer
 from inversion.safe_misfits import (SinkhornSafe, SdtwSafe, TravelTimeSafe,
-                                    make_nim)
+                                    make_nim,
+                                    ConvolvedWavefieldMisfit)
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +124,7 @@ OPTIMIZERS = {
 }
 
 MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci",
-           "traveltime", "nim")
+           "traveltime", "nim", "convsi")
 
 # per-misfit run settings (batch_size, checkpoint_segments,
 # waveform_normalize), copied from Liu's misfit-test scripts; sinkhorn runs
@@ -140,6 +141,7 @@ MISFIT_RUN_SETTINGS = {
     # traveltime is O(shots*receivers) conv1d -> batch to cap memory (still slow)
     "traveltime": dict(batch_size=5,    checkpoint_segments=2, normalize=True),
     "nim":        dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "convsi":     dict(batch_size=2,    checkpoint_segments=2, normalize=False),
 }
 
 
@@ -180,6 +182,9 @@ def build_misfit(name, iterations=ITERATIONS):
     if name == "nim":
         # normalized integration = Wasserstein-1 at p=1 (cycle-skipping robust)
         return make_nim(p=1, trans_type="linear", theta=1.0, dt=DT)
+    if name == "convsi":
+        # source-independent convolved-wavefields misfit (Choi & Alkhalifah 2011); cancels the unknown source wavelet
+        return ConvolvedWavefieldMisfit(dt=DT)
     raise ValueError(f"unknown misfit {name!r}")
 
 

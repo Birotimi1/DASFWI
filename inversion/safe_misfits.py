@@ -42,6 +42,11 @@ make_nim       - Normalized Integration Method (= Wasserstein-1 for p=1),
 apply_misfit   - dispatcher: calls .apply(...) for Misfit_NIM, else
                  .forward(syn, obs). Use it in any custom (non-AcousticFWI)
                  inversion loop so NIM and the plain misfits are uniform.
+ConvolvedWavefieldMisfit - SOURCE-INDEPENDENT convolved-wavefields misfit
+                 (Choi & Alkhalifah 2011): cross-convolution cancels the
+                 unknown source wavelet (and its amplitude) exactly. Carries
+                 over to DAS because the operator is linear/time-invariant.
+                 Run with waveform_normalize=False; CUDA/CPU (FFT, no MPS).
 """
 
 import torch
@@ -49,7 +54,7 @@ import torch
 import pysdtw
 from geomloss import SamplesLoss
 
-from ADFWI.fwi.misfit import (Misfit_global_correlation,
+from ADFWI.fwi.misfit import (Misfit, Misfit_global_correlation,
                               Misfit_wasserstein_sinkhorn, Misfit_sdtw,
                               Misfit_traveltime, Misfit_NIM)
 
@@ -163,6 +168,66 @@ class TravelTimeSafe(Misfit_traveltime):
                 weights = F.softmax(self.beta * cc, dim=0)
                 rsd[ishot, ircv] = torch.abs((weights * lags).sum() * self.dt)
         return torch.sum(rsd)
+
+
+class ConvolvedWavefieldMisfit(Misfit):
+    """Source-INDEPENDENT convolved-wavefields misfit (Choi & Alkhalifah, 2011,
+    Geophysics 76(5) R125-R134).
+
+        E = sum_shot sum_chan || syn_c (*) obs_ref  -  obs_c (*) syn_ref ||^2
+
+    where (*) is convolution in time and obs_ref / syn_ref is the per-shot
+    channel-AVERAGE trace (the paper found averaging beats a single reference).
+    Writing syn = g_syn (*) s_syn and obs = g_obs (*) s_obs, BOTH cross-terms
+    carry the factor s_syn (*) s_obs equally, so it cancels: the misfit is zero
+    at the true model (g_syn = g_obs) REGARDLESS of the unknown source wavelet
+    -> no source estimation needed, and it also removes the source-amplitude
+    dependency. A byproduct (paper): the modeled data low-pass-filters the
+    observed, giving implicit low->high frequency continuation.
+
+    DAS reformulation: our observation operator R (endpoint difference / E5
+    contraction) is LINEAR and TIME-INVARIANT, so it commutes with the temporal
+    source convolution -- d_das = R(g (*) s) = R(g) (*) s = g_das (*) s -- and
+    the source-cancellation carries over verbatim to strain-rate channel
+    gathers. Apply this misfit to the DAS gathers exactly as to pressure.
+
+    Notes:
+    - Run with waveform_normalize=False to preserve the exact source-
+      independence (per-trace max-normalization perturbs the cancellation).
+    - It cancels the SOURCE WAVELET (common to all traces); a per-CHANNEL
+      amplitude miscalibration is a separate, smaller effect.
+    - FFT convolution -> CUDA/CPU only (torch rfft is unavailable on Apple MPS,
+      like the envelope/weci misfits).
+    """
+
+    def __init__(self, dt=1):
+        super().__init__()
+        self.dt = dt
+
+    def forward(self, syn, obs):
+        # syn, obs: [S, T, C]. AcousticFWI passes (syn, obs) so obs (fixed
+        # observed data) sets the global scale below -> a constant, clean loss.
+        S, T, C = syn.shape
+        # Global detached rescale to O(1): raw DAS strain rate is ~1e-13, and
+        # the convolution-then-square here is quartic in amplitude (~1e-52),
+        # which underflows float32 to zero -> the gradient normalization then
+        # divides 0/0 -> NaN. A single constant scale (same for syn and obs)
+        # is uniform, so it preserves source-independence and only fixes the
+        # dynamic range.
+        scale = obs.abs().amax().detach().clamp_min(1e-30)
+        syn = syn / scale
+        obs = obs / scale
+        syn_ref = syn.mean(dim=2, keepdim=True)          # [S, T, 1] channel avg
+        obs_ref = obs.mean(dim=2, keepdim=True)
+        n = 2 * T - 1                                    # full linear conv length
+        Fs = torch.fft.rfft(syn, n=n, dim=1)
+        Fo = torch.fft.rfft(obs, n=n, dim=1)
+        Fsr = torch.fft.rfft(syn_ref, n=n, dim=1)
+        For = torch.fft.rfft(obs_ref, n=n, dim=1)
+        term1 = torch.fft.irfft(Fs * For, n=n, dim=1)    # syn_c (*) obs_ref
+        term2 = torch.fft.irfft(Fo * Fsr, n=n, dim=1)    # obs_c (*) syn_ref
+        r = term1 - term2
+        return (r * r).sum() * self.dt
 
 
 def make_nim(p=1, trans_type="linear", theta=1.0, dt=1.0):

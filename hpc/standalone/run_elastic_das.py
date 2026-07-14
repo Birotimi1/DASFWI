@@ -78,7 +78,8 @@ from ADFWI.fwi.misfit import (Misfit_waveform_L2, Misfit_envelope,
 from das.geometry import FiberGeometry, merge_fibers
 from das.das_layer import DASObservationLayer
 from inversion.safe_misfits import (SinkhornSafe, SdtwSafe, TravelTimeSafe,
-                                    make_nim, apply_misfit)
+                                    make_nim, apply_misfit,
+                                    ConvolvedWavefieldMisfit)
 
 # ============================================================================
 # [1] PARAMETERS
@@ -113,7 +114,7 @@ SCHEDULER = dict(step_size=100, gamma=0.75)
 CACHE_EVERY = 10
 
 MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci",
-           "traveltime", "nim")
+           "traveltime", "nim", "convsi")
 
 # per-misfit shot batching (misfit calls per iteration = ceil(n_shots/batch));
 # sinkhorn scales itself -> per-trace normalization off (see safe_misfits)
@@ -126,6 +127,7 @@ RUN_SETTINGS = {
     "weci":       dict(batch_size=None, normalize=True),
     "traveltime": dict(batch_size=5,    normalize=True),
     "nim":        dict(batch_size=None, normalize=True),
+    "convsi":     dict(batch_size=2,    normalize=False),
 }
 
 OPTIMIZERS = {   # Liu's constructors; "sgd" pairs with normalized gradients
@@ -159,6 +161,9 @@ def build_misfit(name, iterations):
         return TravelTimeSafe(dt=DT, beta=10)
     if name == "nim":
         return make_nim(p=1, trans_type="linear", theta=1.0, dt=DT)
+    if name == "convsi":
+        # source-independent convolved-wavefields misfit (Choi & Alkhalifah 2011); cancels the unknown source wavelet
+        return ConvolvedWavefieldMisfit(dt=DT)
     raise ValueError(f"unknown misfit {name!r}")
 
 

@@ -71,7 +71,8 @@ from ADFWI.fwi.misfit import (Misfit_waveform_L2, Misfit_envelope,
 from das.geometry import FiberGeometry, merge_fibers
 from das.das_layer import DASObservationLayer
 from inversion.safe_misfits import (SinkhornSafe, SdtwSafe, TravelTimeSafe,
-                                    make_nim)
+                                    make_nim,
+                                    ConvolvedWavefieldMisfit)
 
 # ============================================================================
 # [1] PARAMETERS - everything a user should ever need to touch
@@ -142,7 +143,7 @@ def load_model_pair():
 # helpers (nothing below needs editing for routine runs)
 # ============================================================================
 MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci",
-           "traveltime", "nim")
+           "traveltime", "nim", "convsi")
 
 def build_misfit(name, iterations):
     """Liu's misfit constructions; hardened variants where upstream has
@@ -166,6 +167,9 @@ def build_misfit(name, iterations):
         return TravelTimeSafe(dt=DT, beta=10)
     if name == "nim":
         return make_nim(p=1, trans_type="linear", theta=1.0, dt=DT)
+    if name == "convsi":
+        # source-independent convolved-wavefields misfit (Choi & Alkhalifah 2011); cancels the unknown source wavelet
+        return ConvolvedWavefieldMisfit(dt=DT)
     raise ValueError(f"unknown misfit {name!r}")
 
 # per-misfit run settings (Liu's batch/checkpoint choices; sinkhorn scales
@@ -180,6 +184,7 @@ RUN_SETTINGS = {
     # traveltime normalizes internally and is O(shots*receivers) slow -> batch
     "traveltime": dict(batch_size=5,    checkpoint_segments=2, normalize=True),
     "nim":        dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "convsi":     dict(batch_size=2,    checkpoint_segments=2, normalize=False),
 }
 
 OPTIMIZERS = {   # Liu's exact constructors (03-optimizer-test examples)

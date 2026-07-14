@@ -38,3 +38,8 @@ nim adagrad
 nim adam
 nim adamw
 nim nadam
+convsi sgd
+convsi adagrad
+convsi adam
+convsi adamw
+convsi nadam

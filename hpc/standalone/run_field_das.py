@@ -10,11 +10,13 @@ misfit, and autograd builds the adjoint through it.
 
 Unlike the Marmousi/synthetic scripts there is NO true model, so RMS-vs-truth
 metrics are meaningless and omitted; the run starts from a 1-D velocity
-gradient and reports only the loss trajectory (finite + decreasing) and the
-inverted model. Two field realities to keep in mind, both flagged where they
-bite: (a) the true source wavelet is unknown - a placeholder Ricker is used,
-source estimation is a separate step; (b) the 3-D walkaway is projected onto a
-2-D section (out-of-plane offset dropped) for ADFWI's 2-D code.
+gradient (or --starting traveltime) and reports the loss trajectory and the
+inverted model. Two field realities to keep in mind: (a) the true source
+wavelet is unknown - a placeholder Ricker is used, but --misfit convsi
+(source-INDEPENDENT convolved-wavefields, Choi & Alkhalifah 2011) cancels the
+unknown source entirely and is the recommended field misfit; (b) the 3-D
+walkaway is projected onto a 2-D section (out-of-plane offset dropped) for
+ADFWI's 2-D code.
 
 HOW TO RUN (edit the PARAMETERS block, then):
     python hpc/standalone/run_field_das.py --well 78A-32 --misfit gc
@@ -63,7 +65,8 @@ from ADFWI.fwi.misfit import (Misfit_waveform_L2, Misfit_envelope,
                               Misfit_global_correlation, Misfit_weighted_ECI)
 
 from inversion.safe_misfits import (SinkhornSafe, SdtwSafe, TravelTimeSafe,
-                                    make_nim)
+                                    make_nim,
+                                    ConvolvedWavefieldMisfit)
 from forge.field_loader import load_forge_field, summarize
 
 # ============================================================================
@@ -92,7 +95,7 @@ SCHEDULER = dict(step_size=100, gamma=0.75)
 CACHE_EVERY = 10
 
 MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci",
-           "traveltime", "nim")
+           "traveltime", "nim", "convsi")
 WELLS = ("78A-32", "78B-32")
 
 
@@ -114,6 +117,9 @@ def build_misfit(name, iterations, dt):
         return TravelTimeSafe(dt=dt, beta=10)
     if name == "nim":
         return make_nim(p=1, trans_type="linear", theta=1.0, dt=dt)
+    if name == "convsi":
+        # source-independent convolved-wavefields misfit (Choi & Alkhalifah 2011); cancels the unknown source wavelet
+        return ConvolvedWavefieldMisfit(dt=dt)
     raise ValueError(f"unknown misfit {name!r}")
 
 RUN_SETTINGS = {
@@ -125,6 +131,7 @@ RUN_SETTINGS = {
     "weci":       dict(batch_size=None, checkpoint_segments=1, normalize=True),
     "traveltime": dict(batch_size=5,    checkpoint_segments=2, normalize=True),
     "nim":        dict(batch_size=None, checkpoint_segments=1, normalize=True),
+    "convsi":     dict(batch_size=2,    checkpoint_segments=2, normalize=False),
 }
 
 OPTIMIZERS = {

@@ -201,12 +201,16 @@ The autograd does NOT relax FWI's good-starting-model requirement (that is
 orthogonal to how the gradient is computed); the misfit + multiscale machinery
 does. Three tools for this:
 
-- **8 misfits** now: the 6 original plus `traveltime` (cross-correlation time
+- **9 misfits** now: the 6 original plus `traveltime` (cross-correlation time
   shift) and `nim` (Normalized Integration = Wasserstein-1 at p=1), both
-  cycle-skipping robust. Available in every runner (`--misfit traveltime|nim`)
-  and the 40-combo campaign. `traveltime` is O(shots*receivers) conv1d and
-  slow on dense channels; decimate. NIM is a torch.autograd.Function — custom
-  loops evaluate it via `inversion.safe_misfits.apply_misfit`.
+  cycle-skipping robust, plus `convsi` (source-INDEPENDENT convolved-wavefields,
+  Choi & Alkhalifah 2011). Available in every runner and the 45-combo campaign.
+  `traveltime` is O(shots*receivers) conv1d and slow; decimate. NIM is a
+  torch.autograd.Function — custom loops evaluate it via
+  `inversion.safe_misfits.apply_misfit`. `convsi` cancels the unknown source
+  wavelet + amplitude exactly (run with `waveform_normalize=False`); it is the
+  recommended FIELD misfit since the true FORGE source is unknown. `convsi`
+  uses FFT -> CUDA/CPU only (no Apple MPS), like `envelope`/`weci`.
 - **Starting-model degradation ladder** (`inversion/run_starting_model_ladder.py`):
   inverts the same data from progressively worse starting models (mild ->
   strong smooth -> 1-D gradient -> constant) with each misfit, SGD fixed, and
