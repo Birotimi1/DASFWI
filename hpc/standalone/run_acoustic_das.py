@@ -67,12 +67,10 @@ from ADFWI.fwi import AcousticFWI
 from ADFWI.fwi.misfit import (Misfit_waveform_L2, Misfit_envelope,
                               Misfit_global_correlation, Misfit_weighted_ECI)
 
-# dasfwi modules (this repo): the DAS operator + hardened misfits
+# dasfwi modules (this repo): the DAS operator + technique registry
 from das.geometry import FiberGeometry, merge_fibers
 from das.das_layer import DASObservationLayer
-from inversion.safe_misfits import (SinkhornSafe, SdtwSafe, TravelTimeSafe,
-                                    make_nim,
-                                    ConvolvedWavefieldMisfit)
+from inversion import config          # single source of truth for techniques
 
 # ============================================================================
 # [1] PARAMETERS - everything a user should ever need to touch
@@ -142,62 +140,14 @@ def load_model_pair():
 # ============================================================================
 # helpers (nothing below needs editing for routine runs)
 # ============================================================================
-MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci",
-           "traveltime", "nim", "convsi")
+# techniques from the single source of truth (inversion/config.py)
+MISFITS = config.MISFITS
+RUN_SETTINGS = config.MISFIT_SETTINGS
+OPTIMIZERS = config.LIU_OPTIMIZERS
+
 
 def build_misfit(name, iterations):
-    """Liu's misfit constructions; hardened variants where upstream has
-    portability bugs (see inversion/safe_misfits.py). traveltime and nim are
-    the cycle-skipping-robust additions (traveltime = cross-correlation time
-    shift; nim = normalized integration = Wasserstein-1 at p=1)."""
-    if name == "l2":
-        return Misfit_waveform_L2(dt=DT)
-    if name == "envelope":
-        return Misfit_envelope(dt=DT, p=1.5)
-    if name == "gc":
-        return Misfit_global_correlation(dt=DT)
-    if name == "sdtw":
-        return SdtwSafe(gamma=1, sparse_sampling=2, dt=DT)
-    if name == "sinkhorn":
-        return SinkhornSafe(dt=0.01, sparse_sampling=2, p=1, blur=1e-2)
-    if name == "weci":
-        return Misfit_weighted_ECI(p=1.5, dt=1, max_iter=iterations,
-                                   instaneous_phase=False)
-    if name == "traveltime":
-        return TravelTimeSafe(dt=DT, beta=10)
-    if name == "nim":
-        return make_nim(p=1, trans_type="linear", theta=1.0, dt=DT)
-    if name == "convsi":
-        # source-independent convolved-wavefields misfit (Choi & Alkhalifah 2011); cancels the unknown source wavelet
-        return ConvolvedWavefieldMisfit(dt=DT)
-    raise ValueError(f"unknown misfit {name!r}")
-
-# per-misfit run settings (Liu's batch/checkpoint choices; sinkhorn scales
-# itself globally, so per-trace normalization is off for it)
-RUN_SETTINGS = {
-    "l2":         dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "envelope":   dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "gc":         dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "sdtw":       dict(batch_size=5,    checkpoint_segments=2, normalize=True),
-    "sinkhorn":   dict(batch_size=2,    checkpoint_segments=2, normalize=False),
-    "weci":       dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    # traveltime normalizes internally and is O(shots*receivers) slow -> batch
-    "traveltime": dict(batch_size=5,    checkpoint_segments=2, normalize=True),
-    "nim":        dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "convsi":     dict(batch_size=2,    checkpoint_segments=2, normalize=False),
-}
-
-OPTIMIZERS = {   # Liu's exact constructors (03-optimizer-test examples)
-    "sgd":     lambda p: torch.optim.SGD(p, lr=0.01, momentum=0.9),
-    "adagrad": lambda p: torch.optim.Adagrad(p, lr=10, lr_decay=0,
-                                             weight_decay=0),
-    "adam":    lambda p: torch.optim.Adam(p, lr=10),
-    "adamw":   lambda p: torch.optim.AdamW(p, lr=10, betas=(0.9, 0.999),
-                                           weight_decay=1e-6),
-    "nadam":   lambda p: torch.optim.NAdam(p, lr=10, betas=(0.9, 0.999),
-                                           weight_decay=0,
-                                           momentum_decay=4e-3),
-}
+    return config.build_misfit(name, dt=DT, iterations=iterations)
 
 def pick_device(arg=None):
     if arg:

@@ -37,6 +37,8 @@ from ADFWI.fwi.misfit import Misfit_global_correlation
 from das.geometry import FiberGeometry
 from forge.proxy_model import (make_acoustic_model, vibroseis_line,
                                generate_observed, DX, DZ, GAUGE_L, DCH)
+from inversion import config as techlib   # optimizer + regularization registry
+                                          # (aliased: the run arg is named config)
 
 
 class GCMisfit64(Misfit_global_correlation):
@@ -146,15 +148,14 @@ def run_inverse_crime(config):
                                 device=device, dtype=dtype,
                                 vp_bound=cfg["vp_bound"], rho=rho_fixed)
     prop = AcousticPropagator(model, survey, device=device, dtype=dtype)
+    # optimizer from the shared registry (all 5; lr overrides Liu's fixed lr,
+    # and AdamW keeps weight_decay=0 here as the inverse-crime default)
     if cfg["optimizer"] == "adamw":
         optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["lr"],
                                       weight_decay=0.0)
-    elif cfg["optimizer"] == "adam":
-        optimizer = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
-    elif cfg["optimizer"] == "sgd":
-        optimizer = torch.optim.SGD(model.parameters(), lr=cfg["lr"])
     else:
-        raise ValueError(f'unknown optimizer {cfg["optimizer"]!r}')
+        optimizer = techlib.build_optimizer(cfg["optimizer"], model.parameters(),
+                                           lr=cfg["lr"])
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10 ** 6,
                                                 gamma=1.0)
     loss_fn = GCMisfit64(dt=1) if cfg["misfit"] == "gc" else cfg["misfit"]
@@ -166,9 +167,17 @@ def run_inverse_crime(config):
     else:
         gradient_processor = GradProcessor()
 
+    # optional regularization (Tikhonov / TV) from the shared registry
+    nz, nx = vp_init.shape
+    reg_fn, wx, wz = techlib.build_regularization(
+        cfg.get("regularization", "none"), nx, nz, DX, DZ, device, dtype)
+
     fwi = AcousticFWI(prop, model, optimizer, scheduler,
                       loss_fn=loss_fn, obs_data=obs_data,
                       gradient_processor=gradient_processor,
+                      regularization_fn=reg_fn,
+                      regularization_weights_x=wx,
+                      regularization_weights_z=wz,
                       waveform_normalize=cfg["waveform_normalize"],
                       cache_result=True, save_fig_epoch=-1,
                       das_layer=layer, obs_key="strain_rate")

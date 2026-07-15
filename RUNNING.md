@@ -223,6 +223,39 @@ does. Three tools for this:
   reliable profile; a downhole fiber constrains only the depths it spans, so
   the overburden above the fiber top gets the average velocity to that top).
 
+## 4f. One place for all techniques (`inversion/config.py`)
+
+Every technique now lives in a single source of truth, `inversion/config.py`,
+instead of being copy-pasted across runners:
+- `MISFITS` (9) + `build_misfit(name, dt, iterations)` + `MISFIT_SETTINGS`
+- `OPTIMIZER_NAMES` (5) + `LIU_OPTIMIZERS` + `build_optimizer(name, params, lr)`
+- `REGULARIZERS` (5) + `build_regularization(name, nx, nz, dx, dz, dev, dtype)`
+- `InversionConfig` dataclass (a full technique stack) + `deployment_score`
+
+Every runner (standalone acoustic/elastic/field, the campaign) imports from it;
+add a technique in ONE place. Source-independence is the `convsi` misfit;
+starting-model construction is `forge/traveltime_tomography.py`; both compose
+with any misfit/optimizer/regularizer.
+
+## 4g. Finding the best combination for deployment
+
+The full misfit x optimizer x regularizer x starting-model cross-product is too
+large to brute-force. `inversion/run_technique_matrix.py` runs a CONFIGURABLE
+grid, scores each run with `deployment_score`, and ranks them. Use it STAGED:
+
+```bash
+# 1. base grid: misfit x optimizer (reg=none) -> rank
+python inversion/run_technique_matrix.py
+# 2. take the top few, sweep regularizers
+python inversion/run_technique_matrix.py --misfits gc,sinkhorn --optimizers sgd \
+       --regularizers none,tikhonov1,tv1
+# 3. take the winner, sweep starting-model quality (the ladder)
+python inversion/run_starting_model_ladder.py --misfits gc,sinkhorn
+```
+`--quick` shrinks it for a local wiring check. Writes `ranking.json` (best
+deployment stack first). On the cluster, `sbatch --export=ALL,KIND=...` the
+winning combo.
+
 ## 5. Syncing the local ADFWI into GitHub
 
 The local (patched) ADFWI package is mirrored at `ADFWI_local/`. After any

@@ -79,9 +79,7 @@ from ADFWI.fwi.regularization import (regularization_Tikhonov_1order,
 
 from das.geometry import FiberGeometry, merge_fibers
 from das.das_layer import DASObservationLayer
-from inversion.safe_misfits import (SinkhornSafe, SdtwSafe, TravelTimeSafe,
-                                    make_nim,
-                                    ConvolvedWavefieldMisfit)
+from inversion import config          # single source of truth for techniques
 
 
 # ---------------------------------------------------------------------------
@@ -107,42 +105,10 @@ FIBER_N_CHANNELS = 74                  # nodes 12..85 -> z = 480..3400 m
 
 OBS_FILE = "obs_data_das.npz"
 
-# Liu's optimizer configurations, copied from
-# examples/acoustic/03-optimizer-test/01-Marmousi2-Test/02_inversion_*.py
-OPTIMIZERS = {
-    "sgd":     lambda params: torch.optim.SGD(params, lr=0.01, momentum=0.9),
-    "adagrad": lambda params: torch.optim.Adagrad(params, lr=10, lr_decay=0,
-                                                  weight_decay=0),
-    "adam":    lambda params: torch.optim.Adam(params, lr=10),
-    "adamw":   lambda params: torch.optim.AdamW(params, lr=10,
-                                                betas=(0.9, 0.999),
-                                                weight_decay=1e-6),
-    "nadam":   lambda params: torch.optim.NAdam(params, lr=10,
-                                                betas=(0.9, 0.999),
-                                                weight_decay=0,
-                                                momentum_decay=4e-3),
-}
-
-MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci",
-           "traveltime", "nim", "convsi")
-
-# per-misfit run settings (batch_size, checkpoint_segments,
-# waveform_normalize), copied from Liu's misfit-test scripts; sinkhorn runs
-# unnormalized because SinkhornSafe scales globally per shot (per-trace
-# max-normalization backward overflows float32 on numerically-dead fiber
-# traces - see SinkhornSafe)
-MISFIT_RUN_SETTINGS = {
-    "l2":         dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "envelope":   dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "gc":         dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "sdtw":       dict(batch_size=5,    checkpoint_segments=2, normalize=True),
-    "sinkhorn":   dict(batch_size=2,    checkpoint_segments=2, normalize=False),
-    "weci":       dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    # traveltime is O(shots*receivers) conv1d -> batch to cap memory (still slow)
-    "traveltime": dict(batch_size=5,    checkpoint_segments=2, normalize=True),
-    "nim":        dict(batch_size=None, checkpoint_segments=1, normalize=True),
-    "convsi":     dict(batch_size=2,    checkpoint_segments=2, normalize=False),
-}
+# techniques come from the single source of truth (inversion/config.py)
+OPTIMIZERS = config.LIU_OPTIMIZERS
+MISFITS = config.MISFITS
+MISFIT_RUN_SETTINGS = config.MISFIT_SETTINGS
 
 
 def pick_device(arg=None):
@@ -156,55 +122,13 @@ def pick_device(arg=None):
 
 
 def build_misfit(name, iterations=ITERATIONS):
-    """Liu's misfit constructions, verbatim from his example files."""
-    if name == "l2":
-        return Misfit_waveform_L2(dt=DT)
-    if name == "envelope":
-        return Misfit_envelope(dt=DT, p=1.5)
-    if name == "gc":
-        return Misfit_global_correlation(dt=DT)
-    if name == "sdtw":
-        # Liu: Misfit_sdtw(gamma=1, sparse_sampling=2, dt=dt); SdtwSafe =
-        # same math with a portable use_cuda test (see the class)
-        return SdtwSafe(gamma=1, sparse_sampling=2, dt=DT)
-    if name == "sinkhorn":
-        # Liu: Misfit_wasserstein_sinkhorn(dt=0.01, sparse_sampling=2, p=1,
-        # blur=1e-2); SinkhornSafe = same math, portable dtypes + fiber
-        # numerics guards
-        return SinkhornSafe(dt=0.01, sparse_sampling=2, p=1, blur=1e-2)
-    if name == "weci":
-        # counter == iteration ONLY because batch_size=None for weci
-        return Misfit_weighted_ECI(p=1.5, dt=1, max_iter=iterations,
-                                   instaneous_phase=False)
-    if name == "traveltime":
-        # cross-correlation traveltime (cycle-skipping robust); slow
-        return TravelTimeSafe(dt=DT, beta=10)
-    if name == "nim":
-        # normalized integration = Wasserstein-1 at p=1 (cycle-skipping robust)
-        return make_nim(p=1, trans_type="linear", theta=1.0, dt=DT)
-    if name == "convsi":
-        # source-independent convolved-wavefields misfit (Choi & Alkhalifah 2011); cancels the unknown source wavelet
-        return ConvolvedWavefieldMisfit(dt=DT)
-    raise ValueError(f"unknown misfit {name!r}")
+    """Misfit by name at the campaign dt (delegates to inversion.config)."""
+    return config.build_misfit(name, dt=DT, iterations=iterations)
 
 
 def build_regularization(name, device, dtype):
-    """Liu's regularization constructions (04-regularization examples).
-    Returns (regularization_fn, weights_x, weights_z)."""
-    if name in (None, "none"):
-        return None, [0, 0], [0, 0]
-    kw = dict(step_size=50, gamma=0.9, device=device, dtype=dtype)
-    if name == "tikhonov1":
-        fn = regularization_Tikhonov_1order(NX, NZ, DX, DZ, **kw)
-    elif name == "tikhonov2":
-        fn = regularization_Tikhonov_2order(NX, NZ, DX, DZ, **kw)
-    elif name == "tv1":
-        fn = regularization_TV_1order(NX, NZ, DX, DZ, 1e-7, 1e-7, **kw)
-    elif name == "tv2":
-        fn = regularization_TV_2order(NX, NZ, DX, DZ, **kw)
-    else:
-        raise ValueError(f"unknown regularization {name!r}")
-    return fn, [1e-7, 0], [1e-7, 0]
+    """Regularization on the campaign grid (delegates to inversion.config)."""
+    return config.build_regularization(name, NX, NZ, DX, DZ, device, dtype)
 
 
 def load_models():
