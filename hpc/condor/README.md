@@ -19,11 +19,11 @@ One process = one GPU (ADFWI is single-GPU per process; the runners auto-pick
 
 | # | Where | What | How |
 |---|-------|------|-----|
-| 1 | `hpc/condor/activate_env.sh` | how the conda env is activated on an execute node. **Main thing to get right.** | set `DASFWI_ENV` (default `dasfwi`; use `adfwi` to reuse the torch 2.6+cu124 env you already built). Assumes Miniforge at `$HOME/miniconda3` (§3). |
+| 1 | `hpc/condor/activate_env.sh` | how the conda env is activated on an execute node. **Main thing to get right.** | env name: edit the `DASFWI_ENV` default in the file (default `dasfwi`; `adfwi` to reuse the torch 2.6+cu124 env you already built), or pass `-a 'environment="DASFWI_ENV=adfwi"'` at submit. Assumes Miniforge at `$HOME/miniconda3` (§3). |
 | 2 | `*.sub` `Requirements` | GPU filter: `(CUDADriverVersion >= 12.0) && (CUDACapability >= 8.0)`. | leave as-is for the fast Ampere cards; drop the `CUDACapability` clause to also match the Turing Quadros (§ GPU). |
 | 3 | `*.sub` `request_memory` | 24G campaign / 48G single runs. | raise for field production. |
 | 4 | shared filesystem | do execute nodes see the repo + data? OrangeGrid is opportunistic. | run `fs_check.sub` FIRST (§4). |
-| 5 | `DASFWI_RESULTS` (optional) | where outputs go. | `-a 'environment=DASFWI_RESULTS=/path'` or export before submit. |
+| 5 | `DASFWI_RESULTS` (optional) | where outputs go. | `-a 'environment="DASFWI_RESULTS=/path"'` at submit (exporting in your shell does NOT reach the job — there is no `getenv`). Multiple vars, space-separated inside the double quotes: `-a 'environment="DASFWI_ENV=adfwi DASFWI_RESULTS=/path"'`. |
 
 Already set in every `.sub`: `+request_gpus = 1` (OrangeGrid's leading-plus
 form), `should_transfer_files = IF_NEEDED`, `initialdir = .` (the repo root),

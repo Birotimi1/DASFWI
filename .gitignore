@@ -225,3 +225,8 @@ results/standalone_elastic/
 results/standalone_field/
 results/starting_model_ladder/
 results/technique_matrix/
+
+# HTCondor job stdout/stderr and event logs (OrangeGrid convention:
+# .out/.err in output/, .log in logs/ -- *.log is already ignored above)
+/output/
+/logs/

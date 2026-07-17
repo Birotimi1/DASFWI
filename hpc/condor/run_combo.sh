@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 # HTCondor wrapper: one misfit x optimizer cell of the full-Marmousi2 DAS
-# campaign. marmousi_full_das.sub passes the combos.txt line as two args:
+# campaign. marmousi_full_das.sub passes the combos.txt line via
+# `arguments = $(combo)`; condor's old-syntax arguments split on whitespace,
+# so this normally arrives as two args:
 #   run_combo.sh <misfit> <optimizer>
+# Also accept the whole line as ONE arg ("l2 sgd") so a quoted/new-syntax
+# arguments line can never break the campaign.
 set -euo pipefail
 
-MISFIT="$1"
-OPTIMIZER="$2"
+if [[ $# -eq 1 ]]; then
+    read -r MISFIT OPTIMIZER <<<"$1"
+else
+    MISFIT="${1:?usage: run_combo.sh <misfit> <optimizer>}"
+    OPTIMIZER="${2:?usage: run_combo.sh <misfit> <optimizer>}"
+fi
+: "${OPTIMIZER:?run_combo.sh: could not parse optimizer from: $*}"
 
 # activate the conda env (edit hpc/condor/activate_env.sh once for your account)
 source "$(dirname "$0")/activate_env.sh"

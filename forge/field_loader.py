@@ -58,11 +58,24 @@ from das.geometry import FiberGeometry
 from das.das_layer import DASObservationLayer
 
 # Default field-data location (LOCAL ONLY - never committed to git).
-# repo = .../Codes/DASFWI ; the VSP data is .../2022_Stimulation/DAS_VSP,
-# i.e. two levels up from the repo (Codes/ -> 2022_Stimulation/).
+# Layouts supported, in order:
+#   1. FORGE_DAS_DIR env var (always wins)
+#   2. side-by-side:  <repo-parent>/DAS_VSP     (the HPC layout: data copied
+#      next to DASFWI/, same convention as Data_downloads -- what
+#      hpc/condor/fs_check.sub verifies)
+#   3. grandparent:   <repo-grandparent>/DAS_VSP (the local dev layout:
+#      repo = .../Codes/DASFWI, data = .../2022_Stimulation/DAS_VSP)
 _REPO = Path(__file__).resolve().parents[1]
-DAS_VSP_DIR = Path(os.environ.get(
-    "FORGE_DAS_DIR", _REPO.parents[1] / "DAS_VSP"))
+
+
+def _default_das_dir() -> Path:
+    side_by_side = _REPO.parent / "DAS_VSP"
+    if side_by_side.is_dir():
+        return side_by_side
+    return _REPO.parents[1] / "DAS_VSP"
+
+
+DAS_VSP_DIR = Path(os.environ.get("FORGE_DAS_DIR", _default_das_dir()))
 
 WELLS = ("78A-32", "78B-32")
 FIELD_DT = 1e-3          # SEG-Y sample interval (s)

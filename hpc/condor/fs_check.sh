@@ -23,7 +23,8 @@ done
 echo "--- conda / python env (DASFWI_ENV=${DASFWI_ENV:-dasfwi}) ---"
 # Run in a subshell: activate_env.sh `exit`s on failure, and it is normally
 # sourced, so isolating it here keeps a bad env from aborting this diagnostic.
-if ( source "hpc/condor/activate_env.sh" ) >/dev/null 2>&1; then
+# stdout stays visible (it carries the python/torch/cuda sanity line).
+if ( source "hpc/condor/activate_env.sh" ) 2>/dev/null; then
     echo "  conda env activates OK"
 else
     echo "  MISSING/BROKEN conda env  <-- edit hpc/condor/activate_env.sh (DASFWI_ENV)"

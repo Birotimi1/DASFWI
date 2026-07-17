@@ -19,12 +19,19 @@ set -euo pipefail
 if [[ -z "${PYTHON_BIN:-}" ]]; then
     _env="${DASFWI_ENV:-dasfwi}"
 
+    # A condor job runs with a scrubbed environment (no getenv), so $HOME may
+    # be UNSET -- OrangeGrid's own wrappers therefore use /home/$(whoami).
+    # Guarantee HOME (python libs -- matplotlib/obspy caches -- want it too),
+    # then look for Miniforge there.
+    export HOME="${HOME:-/home/$(whoami)}"
+    _home="$HOME"
+
     # OrangeGrid: Miniforge at $HOME/miniconda3 (the documented location).
-    _conda="${HOME}/miniconda3/bin/conda"
+    _conda="${_home}/miniconda3/bin/conda"
     if [[ ! -x "$_conda" ]]; then
         # fall back to other common install roots / an already-on-PATH conda
-        for _c in "$HOME/miniforge3/bin/conda" "$HOME/mambaforge/bin/conda" \
-                  "$HOME/anaconda3/bin/conda" /opt/miniforge3/bin/conda \
+        for _c in "$_home/miniforge3/bin/conda" "$_home/mambaforge/bin/conda" \
+                  "$_home/anaconda3/bin/conda" /opt/miniforge3/bin/conda \
                   /opt/conda/bin/conda; do
             [[ -x "$_c" ]] && { _conda="$_c"; break; }
         done
@@ -34,7 +41,7 @@ if [[ -z "${PYTHON_BIN:-}" ]]; then
     fi
     if [[ ! -x "$_conda" ]]; then
         echo "activate_env.sh: no conda found (looked for Miniforge at" \
-             "\$HOME/miniconda3); set PYTHON_BIN or edit this file" >&2
+             "$_home/miniconda3); set PYTHON_BIN or edit this file" >&2
         exit 3
     fi
 
@@ -52,6 +59,11 @@ if [[ -z "${PYTHON_BIN:-}" ]]; then
     PYTHON_BIN=python
 fi
 export PYTHON_BIN
+
+# headless execute nodes: never try an X backend for the final.png plots, and
+# keep matplotlib's font cache somewhere writable (condor scratch, else /tmp).
+export MPLBACKEND="${MPLBACKEND:-Agg}"
+export MPLCONFIGDIR="${MPLCONFIGDIR:-${_CONDOR_SCRATCH_DIR:-${TMPDIR:-/tmp}}}"
 
 # one-line sanity to stdout (shows in the job .out): interpreter + CUDA
 "$PYTHON_BIN" - <<'PY' || true
