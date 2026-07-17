@@ -3,10 +3,11 @@
 # OrangeGrid (HTCondor); see hpc/condor/README.md.
 #
 # From the DASFWI repo root on OrangeGrid:
-#   mkdir -p output logs                           # condor needs them to exist
-#   python hpc/marmousi_full_das/generate_obs.py   # ONCE, before submitting
-#   condor_submit hpc/condor/marmousi_full_das.sub
-#   condor_q $USER                                 # watch progress
+#   mkdir -p output logs                                    # condor needs them
+#   condor_submit hpc/condor/run.sub -a 'kind=genobs'       # ONCE, on a GPU node
+#   condor_q $USER                                          # wait for genobs
+#   condor_submit hpc/condor/marmousi_full_das.sub          # then the 45 jobs
+#   condor_q $USER                                          # watch progress
 #
 # Assumes a SHARED FILESYSTEM (repo + Marmousi data visible on execute nodes) --
 # verify first with hpc/condor/fs_check.sub. Each combos.txt line is

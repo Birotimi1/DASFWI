@@ -1,7 +1,9 @@
-# HTCondor submit file: ONE standalone run on OrangeGrid (acoustic / elastic /
-# field / ladder / matrix), one GPU. Parameters via -a on condor_submit.
+# HTCondor submit file: ONE standalone run on OrangeGrid (genobs / acoustic /
+# elastic / field / ladder / matrix), one GPU. Parameters via -a on condor_submit.
 #
 # From the DASFWI repo root (after mkdir -p output logs):
+#   # generate the shared campaign obs ONCE, on a GPU node (do this FIRST):
+#   condor_submit hpc/condor/run.sub -a 'kind=genobs'
 #   # acoustic DAS, gc + adam:
 #   condor_submit hpc/condor/run.sub -a 'kind=acoustic' -a 'misfit=gc' -a 'optimizer=adam'
 #   # the observable A/B control (pressure receivers):

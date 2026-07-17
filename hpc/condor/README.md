@@ -122,7 +122,11 @@ Requirements  = (CUDADriverVersion >= 12.0) && (CUDACapability >= 8.0)
 ## 5. Submit
 
 ```bash
-python hpc/marmousi_full_das/generate_obs.py     # ONCE, before the campaign
+# generate the shared observed DAS data ONCE, on a GPU node (NOT the login node
+# -- it is a full 40-shot forward). Writes results/marmousi_full_das/
+# obs_data_das.npz, which all 45 campaign jobs read. Wait for it to finish
+# (condor_q $USER) and confirm output/run_genobs_*.out ends with "saved: ...".
+condor_submit hpc/condor/run.sub -a 'kind=genobs'
 
 # the observable question first: DAS vs conventional A/B
 condor_submit hpc/condor/run.sub -a 'kind=acoustic' -a 'misfit=gc' -a 'optimizer=adam'
