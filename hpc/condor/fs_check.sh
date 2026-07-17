@@ -20,11 +20,13 @@ for p in \
     else echo "  MISSING $label  ($path)  <-- stage this or fix the layout"; fi
 done
 
-echo "--- conda / python env ---"
-if source "hpc/condor/activate_env.sh" 2>/dev/null; then
-    echo "  env activated; PYTHON_BIN=${PYTHON_BIN:-?}"
+echo "--- conda / python env (DASFWI_ENV=${DASFWI_ENV:-dasfwi}) ---"
+# Run in a subshell: activate_env.sh `exit`s on failure, and it is normally
+# sourced, so isolating it here keeps a bad env from aborting this diagnostic.
+if ( source "hpc/condor/activate_env.sh" ) >/dev/null 2>&1; then
+    echo "  conda env activates OK"
 else
-    echo "  MISSING conda env  <-- edit hpc/condor/activate_env.sh (DASFWI_ENV)"
+    echo "  MISSING/BROKEN conda env  <-- edit hpc/condor/activate_env.sh (DASFWI_ENV)"
 fi
 
 echo "--- GPU ---"

@@ -1,7 +1,7 @@
 # HTCondor submit file: ONE standalone run on OrangeGrid (acoustic / elastic /
 # field / ladder / matrix), one GPU. Parameters via -a on condor_submit.
 #
-# From the DASFWI repo root (after mkdir -p logs):
+# From the DASFWI repo root (after mkdir -p output logs):
 #   # acoustic DAS, gc + adam:
 #   condor_submit hpc/condor/run.sub -a 'kind=acoustic' -a 'misfit=gc' -a 'optimizer=adam'
 #   # the observable A/B control (pressure receivers):
@@ -20,22 +20,24 @@ misfit          = gc
 optimizer       = adam
 extra           =
 
-universe        = vanilla
 executable      = hpc/condor/run_standalone.sh
 arguments       = $(kind) $(misfit) $(optimizer) $(extra)
 initialdir      = .
 
-request_gpus    = 1
-requirements    = (CUDACapability >= 8.0)
+# GPU: leading-plus request (OrangeGrid form); modern driver + Ampere-or-newer
+# card (A100 80GB / A40 / L40S). Drop the CUDACapability clause to also allow
+# the Turing Quadro RTX 6000/5000. See marmousi_full_das.sub for details.
++request_gpus   = 1
+Requirements    = (CUDADriverVersion >= 12.0) && (CUDACapability >= 8.0)
 request_cpus    = 8
 request_memory  = 48GB
 request_disk    = 16GB
-getenv          = True
+# The wrapper activates conda itself, so `getenv` is not needed. Overrides:
 # environment = "DASFWI_ENV=dasfwi DASFWI_RESULTS=/path/results"
 
 log             = logs/run_$(kind)_$(Cluster).log
-output          = logs/run_$(kind)_$(misfit)_$(optimizer)_$(Cluster).out
-error           = logs/run_$(kind)_$(misfit)_$(optimizer)_$(Cluster).err
+output          = output/run_$(kind)_$(misfit)_$(optimizer)_$(Cluster).out
+error           = output/run_$(kind)_$(misfit)_$(optimizer)_$(Cluster).err
 
 should_transfer_files = IF_NEEDED
 when_to_transfer_output = ON_EXIT

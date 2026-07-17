@@ -178,16 +178,14 @@ launching them concurrently; the propagators' `gpu_num`/`cpu_num` arguments
 are stored but never used (multi-GPU is upstream future work). Ours follows
 the same one-process-one-GPU rule, three ways:
 
-- **HTCondor** (`hpc/condor/`, the LIVE scheduler for Syracuse OrangeGrid):
-  `request_gpus = 1` + `requirements = (CUDACapability >= 8.0)` per job;
-  Condor sets `CUDA_VISIBLE_DEVICES`, so the scripts' auto-picked `"cuda"` IS
-  the assigned card. `marmousi_full_das.sub` queues the 45-combo campaign from
-  `combos.txt`; `run.sub` does single acoustic/elastic/field/ladder/matrix
+- **HTCondor** (`hpc/condor/`, the scheduler for Syracuse OrangeGrid — the only
+  cluster path in the repo): `+request_gpus = 1` +
+  `Requirements = (CUDADriverVersion >= 12.0) && (CUDACapability >= 8.0)` per
+  job; Condor sets `CUDA_VISIBLE_DEVICES`, so the scripts' auto-picked `"cuda"`
+  IS the assigned card. `marmousi_full_das.sub` queues the 45-combo campaign
+  from `combos.txt`; `run.sub` does single acoustic/elastic/field/ladder/matrix
   runs via `-a 'kind=...'`. Edit `hpc/condor/activate_env.sh` once, run
-  `fs_check.sub` first. See `hpc/condor/README.md`. (OrangeGrid is HTCondor —
-  confirmed — so this is the path used in practice.)
-- **Slurm** (`hpc/slurm/`): equivalent scripts for a Slurm cluster (NOT
-  OrangeGrid): `campaign.slurm` array + `run.slurm`. See `hpc/slurm/README.md`.
+  `fs_check.sub` first. See `hpc/condor/README.md`.
 - **Interactive multi-GPU node**: `./hpc/launch_gpus.sh <NGPU>` fans the
   campaign combos across cards in Liu-style batches (combo i on
   cuda:(i mod NGPU), NGPU at a time). `DRY_RUN=1` prints the plan.
@@ -255,8 +253,8 @@ python inversion/run_technique_matrix.py --misfits gc,sinkhorn --optimizers sgd 
 python inversion/run_starting_model_ladder.py --misfits gc,sinkhorn
 ```
 `--quick` shrinks it for a local wiring check. Writes `ranking.json` (best
-deployment stack first). On the cluster, `sbatch --export=ALL,KIND=...` the
-winning combo.
+deployment stack first). On OrangeGrid, submit the winning combo with
+`condor_submit hpc/condor/run.sub -a 'kind=...' -a 'misfit=...' -a 'optimizer=...'`.
 
 ## 5. Syncing the local ADFWI into GitHub
 

@@ -3,42 +3,43 @@
 # OrangeGrid (HTCondor); see hpc/condor/README.md.
 #
 # From the DASFWI repo root on OrangeGrid:
-#   mkdir -p logs                                  # condor needs it to exist
+#   mkdir -p output logs                           # condor needs them to exist
 #   python hpc/marmousi_full_das/generate_obs.py   # ONCE, before submitting
 #   condor_submit hpc/condor/marmousi_full_das.sub
-#   condor_q                                       # watch progress
+#   condor_q $USER                                 # watch progress
 #
 # Assumes a SHARED FILESYSTEM (repo + Marmousi data visible on execute nodes) --
 # verify first with hpc/condor/fs_check.sub. Each combos.txt line is
 # "<misfit> <optimizer>", passed whole as $(combo) and split by the wrapper.
 
-universe        = vanilla
 executable      = hpc/condor/run_combo.sh
 arguments       = $(combo)
 initialdir      = .
 
 # --- GPU: one process, one GPU (ADFWI is single-GPU per process). Condor sets
 # CUDA_VISIBLE_DEVICES so the scripts' auto-picked "cuda" IS the assigned card.
-request_gpus    = 1
-# OrangeGrid GPU capability filter (A40 and A6000 are both Ampere = 8.6).
-# If your Condor rejects this, try `require_gpus = (Capability >= 8.0)` instead.
-requirements    = (CUDACapability >= 8.0)
-# To PIN a specific card (e.g. only A6000), AND it in, e.g.:
-# requirements  = (CUDACapability >= 8.0) && (CUDADeviceName == "NVIDIA RTX A6000")
+# OrangeGrid uses the leading-plus form for the GPU request.
++request_gpus   = 1
+# Land on a modern GPU: a CUDA-12 driver (torch cu124 runs on it) AND an
+# Ampere-or-newer card. OrangeGrid's >= 8.0 cards are the A100 80GB, A40, and
+# L40S; this filter excludes the older Turing Quadro RTX 6000/5000 (cap 7.5).
+# Widen the pool (include the Quadros) by dropping the CUDACapability clause.
+Requirements    = (CUDADriverVersion >= 12.0) && (CUDACapability >= 8.0)
+# To PIN one model, AND it in, e.g. the 80 GB card:
+# Requirements  = (CUDADriverVersion >= 12.0) && (CUDADeviceName == "NVIDIA A100 80GB PCIe")
 
 request_cpus    = 8
 request_memory  = 24GB
 request_disk    = 12GB
 
-# inherit the submit shell's environment so conda/Miniforge is found on the
-# execute node (the wrapper activates the env via hpc/condor/activate_env.sh).
-getenv          = True
-# override data/env locations here if the side-by-side layout is not used:
+# The wrapper activates conda itself (hpc/condor/activate_env.sh -> the
+# OrangeGrid `conda shell.bash hook`), so `getenv` is not needed. Override
+# data/env locations here only if the side-by-side layout is not used:
 # environment = "DASFWI_ENV=dasfwi MARMOUSI_DIR=/path/marmousi2 DASFWI_RESULTS=/path/results"
 
 log             = logs/campaign_$(Cluster).log
-output          = logs/campaign_$(Cluster).$(Process).out
-error           = logs/campaign_$(Cluster).$(Process).err
+output          = output/campaign_$(Cluster).$(Process).out
+error           = output/campaign_$(Cluster).$(Process).err
 
 should_transfer_files = IF_NEEDED
 when_to_transfer_output = ON_EXIT

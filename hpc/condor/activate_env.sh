@@ -1,34 +1,54 @@
 #!/usr/bin/env bash
-# Cluster-specific env activation for the OrangeGrid HTCondor wrappers. Sourced
-# by run_combo.sh and run_standalone.sh. Edit ONCE for your account.
+# Conda activation for the OrangeGrid HTCondor wrappers. Sourced by
+# run_combo.sh / run_standalone.sh / fs_check.sh. Edit ONCE for your account.
 #
 # Goal: make `python` on an execute node be the interpreter of the conda env
 # that has the DASFWI stack (numpy 1.24.4 / scipy 1.10.1 / obspy / pysdtw /
-# geomloss / POT + a CUDA torch build). On OrangeGrid this is Miniforge.
+# geomloss / POT + a CUDA torch build).
 #
-# Set DASFWI_ENV to the env name (default "dasfwi"; use "adfwi" to reuse the
-# env you already built on OrangeGrid -- but see the version note in
-# hpc/condor/README.md). If PYTHON_BIN is already exported (e.g. via the .sub
-# `environment=` line) it is used as-is and no activation happens.
+# This follows the OrangeGrid canonical pattern (Research Computing's PyTorch
+# example): Miniforge installed at $HOME/miniconda3, activated with
+#     eval "$(/home/$(whoami)/miniconda3/bin/conda shell.bash hook)"
+#     conda activate <env>
+#
+# Set DASFWI_ENV to your env name (default "dasfwi"; use "adfwi" to reuse the
+# torch 2.6+cu124 env you already built on OrangeGrid). If PYTHON_BIN is already
+# exported (e.g. via a .sub `environment=` line) it is used as-is, no activation.
 set -euo pipefail
 
 if [[ -z "${PYTHON_BIN:-}" ]]; then
     _env="${DASFWI_ENV:-dasfwi}"
-    # find a conda/mamba base (Miniforge first on OrangeGrid), then activate
-    if command -v conda >/dev/null 2>&1; then
-        _base="$(conda info --base)"
-    else
-        for _c in "$HOME/miniforge3" "$HOME/mambaforge" "$HOME/miniconda3" \
-                  "$HOME/anaconda3" /opt/miniforge3 /opt/conda; do
-            [[ -f "$_c/etc/profile.d/conda.sh" ]] && { _base="$_c"; break; }
+
+    # OrangeGrid: Miniforge at $HOME/miniconda3 (the documented location).
+    _conda="${HOME}/miniconda3/bin/conda"
+    if [[ ! -x "$_conda" ]]; then
+        # fall back to other common install roots / an already-on-PATH conda
+        for _c in "$HOME/miniforge3/bin/conda" "$HOME/mambaforge/bin/conda" \
+                  "$HOME/anaconda3/bin/conda" /opt/miniforge3/bin/conda \
+                  /opt/conda/bin/conda; do
+            [[ -x "$_c" ]] && { _conda="$_c"; break; }
         done
     fi
-    if [[ -z "${_base:-}" ]]; then
-        echo "activate_env.sh: no conda/miniforge found; set PYTHON_BIN or edit this file" >&2
+    if [[ ! -x "$_conda" ]] && command -v conda >/dev/null 2>&1; then
+        _conda="$(command -v conda)"
+    fi
+    if [[ ! -x "$_conda" ]]; then
+        echo "activate_env.sh: no conda found (looked for Miniforge at" \
+             "\$HOME/miniconda3); set PYTHON_BIN or edit this file" >&2
         exit 3
     fi
-    source "$_base/etc/profile.d/conda.sh"
-    conda activate "$_env"
+
+    # canonical OrangeGrid activation. conda's shell hook / `activate` reference
+    # unset vars, so relax `set -u` across them -- but still fail loudly if the
+    # env does not activate (otherwise we'd silently run the wrong python).
+    set +u
+    eval "$("$_conda" shell.bash hook)"
+    if ! conda activate "$_env"; then
+        echo "activate_env.sh: 'conda activate $_env' failed --" \
+             "does the env exist? (set DASFWI_ENV / see hpc/condor/README.md)" >&2
+        exit 4
+    fi
+    set -u
     PYTHON_BIN=python
 fi
 export PYTHON_BIN
