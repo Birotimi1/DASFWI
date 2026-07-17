@@ -63,16 +63,22 @@ Then build the DASFWI env. The code was developed on the pinned stack in
 `env.yml` (python 3.10, numpy 1.24.4, scipy 1.10.1, obspy, pysdtw, geomloss,
 POT). Those non-torch pins matter; torch/CUDA is the flexible part.
 
-- **Recreate `dasfwi` from `env.yml`**, changing only the torch line to
-  OrangeGrid's CUDA (cu124 works on its drivers):
+- **Recommended: create `dasfwi` from `env.yml`** (portable — conda-forge +
+  pip pins, no platform build hashes, torch NOT included), then add the torch
+  build matching the cluster (cu124 works on OrangeGrid's drivers):
   ```bash
-  mamba env create -f env.yml            # or: conda env create -f env.yml
+  cd DASFWI
+  conda env create -f env.yml            # or: mamba env create -f env.yml
   conda activate dasfwi
-  pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu124
+  pip install torch --index-url https://download.pytorch.org/whl/cu124
   ```
 - **Or reuse the `adfwi` env** you already built (python 3.11 / torch 2.6+cu124):
-  set `DASFWI_ENV=adfwi` in `activate_env.sh` and `pip install` any missing deps
-  (`pysdtw geomloss POT segyio 'setuptools<81'`). The code runs on torch 2.1–2.6.
+  submit with `-a 'environment="DASFWI_ENV=adfwi"'` (or edit the default in
+  `activate_env.sh`) and `pip install` the missing pinned deps first —
+  `numpy==1.24.4 scipy==1.10.1 obspy==1.4.1 pysdtw geomloss POT segyio
+  'setuptools<81'`. NOT recommended for the campaign: the validated stack is
+  the `env.yml` one; downgrading numpy inside an existing env is messier than
+  creating `dasfwi` cleanly. The code runs on torch 2.1–2.6.
 
 Verify on a submit node:
 `python -c "import ADFWI, das, forge, inversion, torch; print(torch.__version__, torch.cuda.is_available())"`.
