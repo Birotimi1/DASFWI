@@ -1,25 +1,18 @@
 #!/usr/bin/env bash
 # HTCondor wrapper: one misfit x optimizer cell of the full-Marmousi2 DAS
-# campaign. Called by marmousi_full_das.sub with the combo line as two args:
+# campaign. marmousi_full_das.sub passes the combos.txt line as two args:
 #   run_combo.sh <misfit> <optimizer>
 set -euo pipefail
 
 MISFIT="$1"
 OPTIMIZER="$2"
 
-# --- environment ------------------------------------------------------------
-# Preferred: set PYTHON_BIN in the submit file's environment line to the
-# absolute python of the dasfwi env. Fallback: activate conda env "dasfwi".
-if [[ -z "${PYTHON_BIN:-}" ]]; then
-    source "$(conda info --base)/etc/profile.d/conda.sh"
-    conda activate "${CONDA_ENV:-dasfwi}"
-    PYTHON_BIN=python
-fi
+# activate the conda env (edit hpc/condor/activate_env.sh once for your account)
+source "$(dirname "$0")/activate_env.sh"
 
-# --- run --------------------------------------------------------------------
-# initialdir in the submit file is the DASFWI repo root, so relative paths
-# work; ADFWI_ROOT / MARMOUSI_DIR / DASFWI_RESULTS may be exported via the
-# submit file's environment line if the side-by-side layout is not used.
-echo "host=$(hostname) misfit=${MISFIT} optimizer=${OPTIMIZER}"
+# initialdir in the .sub is the DASFWI repo root, so relative paths work.
+# ADFWI_ROOT / MARMOUSI_DIR / DASFWI_RESULTS may be exported via the .sub
+# `environment=` line if the side-by-side data layout is not used.
+echo "host=$(hostname) misfit=${MISFIT} optimizer=${OPTIMIZER} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 exec "$PYTHON_BIN" hpc/marmousi_full_das/run_one.py \
      --misfit "$MISFIT" --optimizer "$OPTIMIZER"

@@ -1,0 +1,43 @@
+# HTCondor submit file: ONE standalone run on OrangeGrid (acoustic / elastic /
+# field / ladder / matrix), one GPU. Parameters via -a on condor_submit.
+#
+# From the DASFWI repo root (after mkdir -p logs):
+#   # acoustic DAS, gc + adam:
+#   condor_submit hpc/condor/run.sub -a 'kind=acoustic' -a 'misfit=gc' -a 'optimizer=adam'
+#   # the observable A/B control (pressure receivers):
+#   condor_submit hpc/condor/run.sub -a 'kind=acoustic' -a 'extra=--conventional'
+#   # elastic Vp+Vs:
+#   condor_submit hpc/condor/run.sub -a 'kind=elastic' -a 'misfit=gc' -a 'optimizer=adam'
+#   # FORGE field 78A-32, production grid, data-driven start (source-independent):
+#   condor_submit hpc/condor/run.sub -a 'kind=field' -a 'misfit=convsi' \
+#       -a 'extra=--well 78A-32 --shots 318 --starting traveltime --dz 5 --dt 4e-4 --nt 6000'
+#   # technique-matrix search / degradation ladder:
+#   condor_submit hpc/condor/run.sub -a 'kind=matrix'
+#   condor_submit hpc/condor/run.sub -a 'kind=ladder'
+
+kind            = acoustic
+misfit          = gc
+optimizer       = adam
+extra           =
+
+universe        = vanilla
+executable      = hpc/condor/run_standalone.sh
+arguments       = $(kind) $(misfit) $(optimizer) $(extra)
+initialdir      = .
+
+request_gpus    = 1
+requirements    = (CUDACapability >= 8.0)
+request_cpus    = 8
+request_memory  = 48GB
+request_disk    = 16GB
+getenv          = True
+# environment = "DASFWI_ENV=dasfwi DASFWI_RESULTS=/path/results"
+
+log             = logs/run_$(kind)_$(Cluster).log
+output          = logs/run_$(kind)_$(misfit)_$(optimizer)_$(Cluster).out
+error           = logs/run_$(kind)_$(misfit)_$(optimizer)_$(Cluster).err
+
+should_transfer_files = IF_NEEDED
+when_to_transfer_output = ON_EXIT
+
+queue 1

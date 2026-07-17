@@ -1,39 +1,41 @@
-# HTCondor submit file: full-Marmousi2 DAS campaign (30 jobs, 1 GPU each).
+# HTCondor submit file: full-Marmousi2 DAS campaign on OrangeGrid.
+# 45 jobs (9 misfits x 5 optimizers), one GPU each. Tuned for Syracuse
+# OrangeGrid (HTCondor); see hpc/condor/README.md.
 #
-# From the DASFWI repo root on the cluster:
+# From the DASFWI repo root on OrangeGrid:
 #   mkdir -p logs                                  # condor needs it to exist
 #   python hpc/marmousi_full_das/generate_obs.py   # ONCE, before submitting
 #   condor_submit hpc/condor/marmousi_full_das.sub
 #   condor_q                                       # watch progress
 #
-# Assumes a shared filesystem (repo + Marmousi data visible on the execute
-# nodes). Each line of combos.txt is "<misfit> <optimizer>"; the whole line
-# is passed as $(combo) and split by the wrapper - no reliance on condor's
-# multi-column from-file parsing.
+# Assumes a SHARED FILESYSTEM (repo + Marmousi data visible on execute nodes) --
+# verify first with hpc/condor/fs_check.sub. Each combos.txt line is
+# "<misfit> <optimizer>", passed whole as $(combo) and split by the wrapper.
 
 universe        = vanilla
 executable      = hpc/condor/run_combo.sh
 arguments       = $(combo)
 initialdir      = .
 
-# GPU strategy = Liu's: ADFWI is strictly single-GPU per process (his
-# examples pin one experiment per card, cuda:0..7; the propagator's
-# gpu_num parameter is inert upstream). request_gpus=1 is the scheduler
-# form of that pinning - condor sets CUDA_VISIBLE_DEVICES so the scripts'
-# device "cuda" IS the assigned card. For manual fan-out on an interactive
-# multi-GPU node use hpc/launch_gpus.sh instead.
+# --- GPU: one process, one GPU (ADFWI is single-GPU per process). Condor sets
+# CUDA_VISIBLE_DEVICES so the scripts' auto-picked "cuda" IS the assigned card.
 request_gpus    = 1
-request_cpus    = 4
-request_memory  = 16GB
-request_disk    = 8GB
+# OrangeGrid GPU capability filter (A40 and A6000 are both Ampere = 8.6).
+# If your Condor rejects this, try `require_gpus = (Capability >= 8.0)` instead.
+requirements    = (CUDACapability >= 8.0)
+# To PIN a specific card (e.g. only A6000), AND it in, e.g.:
+# requirements  = (CUDACapability >= 8.0) && (CUDADeviceName == "NVIDIA RTX A6000")
 
-# inherit the submit shell's environment (conda paths etc.); add or replace
-# specific variables here if needed, e.g.:
-# environment = "PYTHON_BIN=/path/to/envs/dasfwi/bin/python MARMOUSI_DIR=/path/to/marmousi2 DASFWI_RESULTS=/scratch/user/marmousi_full_das"
+request_cpus    = 8
+request_memory  = 24GB
+request_disk    = 12GB
+
+# inherit the submit shell's environment so conda/Miniforge is found on the
+# execute node (the wrapper activates the env via hpc/condor/activate_env.sh).
 getenv          = True
+# override data/env locations here if the side-by-side layout is not used:
+# environment = "DASFWI_ENV=dasfwi MARMOUSI_DIR=/path/marmousi2 DASFWI_RESULTS=/path/results"
 
-# $(Process) 0..29 maps to the line number in combos.txt (0-based); the
-# job's own stdout also prints its misfit/optimizer on the first line
 log             = logs/campaign_$(Cluster).log
 output          = logs/campaign_$(Cluster).$(Process).out
 error           = logs/campaign_$(Cluster).$(Process).err
@@ -41,4 +43,6 @@ error           = logs/campaign_$(Cluster).$(Process).err
 should_transfer_files = IF_NEEDED
 when_to_transfer_output = ON_EXIT
 
+# $(Process) 0..44 maps to combos.txt line order; each job's first stdout line
+# echoes its misfit/optimizer and the assigned GPU.
 queue combo from hpc/marmousi_full_das/combos.txt

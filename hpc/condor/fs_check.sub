@@ -1,0 +1,23 @@
+# HTCondor pre-flight check: does an execute node see the repo + data, and a
+# GPU? Submit this ONCE before the real runs (OrangeGrid is an opportunistic
+# pool, so the shared-filesystem assumption must be verified, not assumed).
+#
+#   mkdir -p logs
+#   condor_submit hpc/condor/fs_check.sub
+#   # then read logs/fs_check_*.out : it prints the hostname, whether the repo /
+#   # ADFWI_local / Marmousi data / DAS_VSP are visible, the conda env, and the
+#   # GPU. If a path shows MISSING, the shared FS does not reach execute nodes
+#   # and you must stage inputs (should_transfer_files) or use a shared scratch.
+
+universe        = vanilla
+executable      = hpc/condor/fs_check.sh
+initialdir      = .
+request_gpus    = 1
+requirements    = (CUDACapability >= 8.0)
+request_cpus    = 2
+request_memory  = 8GB
+getenv          = True
+output          = logs/fs_check_$(Cluster).out
+error           = logs/fs_check_$(Cluster).err
+log             = logs/fs_check_$(Cluster).log
+queue 1

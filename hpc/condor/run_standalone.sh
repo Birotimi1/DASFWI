@@ -1,23 +1,30 @@
 #!/usr/bin/env bash
-# HTCondor wrapper for the standalone one-file scripts:
-#   run_standalone.sh <acoustic|elastic> [any run_*_das.py args...]
-# e.g. run_standalone.sh acoustic --misfit gc --optimizer adam
-#      run_standalone.sh acoustic --conventional          # pressure control
-#      run_standalone.sh elastic  --misfit sinkhorn --optimizer sgd
+# HTCondor wrapper for the standalone scripts + the search tools. run.sub calls:
+#   run_standalone.sh <kind> <misfit> <optimizer> [extra args...]
+# acoustic/elastic/field take --misfit/--optimizer; ladder/matrix take only the
+# extra args (their own --misfits/--optimizers/... lists), so misfit/optimizer
+# are ignored for those.
 set -euo pipefail
 
-KIND="$1"; shift
+KIND="${1:?kind required}"; MISFIT="${2:-gc}"; OPT="${3:-adam}"; shift 3 || true
+EXTRA=("$@")
+
 case "$KIND" in
-    acoustic) SCRIPT=hpc/standalone/run_acoustic_das.py ;;
-    elastic)  SCRIPT=hpc/standalone/run_elastic_das.py ;;
-    *) echo "first arg must be acoustic|elastic, got: $KIND" >&2; exit 2 ;;
+    acoustic) SCRIPT=hpc/standalone/run_acoustic_das.py; USE_MO=1 ;;
+    elastic)  SCRIPT=hpc/standalone/run_elastic_das.py;  USE_MO=1 ;;
+    field)    SCRIPT=hpc/standalone/run_field_das.py;    USE_MO=1 ;;
+    ladder)   SCRIPT=inversion/run_starting_model_ladder.py; USE_MO=0 ;;
+    matrix)   SCRIPT=inversion/run_technique_matrix.py;      USE_MO=0 ;;
+    *) echo "kind must be acoustic|elastic|field|ladder|matrix, got: $KIND" >&2; exit 2 ;;
 esac
 
-if [[ -z "${PYTHON_BIN:-}" ]]; then
-    source "$(conda info --base)/etc/profile.d/conda.sh"
-    conda activate "${CONDA_ENV:-dasfwi}"
-    PYTHON_BIN=python
-fi
+source "$(dirname "$0")/activate_env.sh"
 
-echo "host=$(hostname) script=$SCRIPT args=$*"
-exec "$PYTHON_BIN" "$SCRIPT" "$@"
+echo "host=$(hostname) kind=$KIND script=$SCRIPT CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+# ${EXTRA[@]+...} guards the empty-array-under-set-u case in bash 3.2
+if [[ "$USE_MO" == "1" ]]; then
+    exec "$PYTHON_BIN" "$SCRIPT" --misfit "$MISFIT" --optimizer "$OPT" \
+         ${EXTRA[@]+"${EXTRA[@]}"}
+else
+    exec "$PYTHON_BIN" "$SCRIPT" ${EXTRA[@]+"${EXTRA[@]}"}
+fi
