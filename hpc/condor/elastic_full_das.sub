@@ -1,0 +1,41 @@
+# HTCondor submit file: full-Marmousi2 ELASTIC 3-parameter DAS campaign.
+# 45 jobs (9 misfits x 5 optimizers), one GPU each: joint Vp + Vs + density
+# inversion, 180 m Gaussian-smoothed initials. See hpc/condor/README.md.
+#
+# From the DASFWI repo root on OrangeGrid:
+#   mkdir -p output logs                                       # condor needs them
+#   condor_submit hpc/condor/run.sub -a 'kind=genobs_elastic'  # ONCE, on a GPU node
+#   condor_q $USER                                             # wait for genobs
+#   condor_submit hpc/condor/elastic_full_das.sub              # then the 45 jobs
+#   condor_q $USER                                             # watch progress
+#
+# Assumes a SHARED FILESYSTEM (repo + Marmousi data visible on execute nodes) --
+# verify first with hpc/condor/fs_check.sub. Each combos.txt line is
+# "<misfit> <optimizer>", passed whole as $(combo) and split by the wrapper.
+
+executable      = hpc/condor/run_combo_elastic.sh
+arguments       = $(combo)
+initialdir      = .
+
+# GPU: leading-plus request; modern driver + Ampere-or-newer card (A100/A40/L40S).
++request_gpus   = 1
+Requirements    = (CUDADriverVersion >= 12.0) && (CUDACapability >= 8.0)
+
+# Elastic is heavier than acoustic (3 wavefields + 3 parameters): more memory.
+request_cpus    = 8
+request_memory  = 32GB
+request_disk    = 16GB
+
+# The wrapper activates conda itself, so `getenv` is not needed. Overrides:
+# environment = "DASFWI_ENV=dasfwi MARMOUSI_DIR=/path/marmousi2 DASFWI_RESULTS=/path/results"
+
+log             = logs/elastic_$(Cluster).log
+output          = output/elastic_$(Cluster).$(Process).out
+error           = output/elastic_$(Cluster).$(Process).err
+
+should_transfer_files = IF_NEEDED
+when_to_transfer_output = ON_EXIT
+
+# $(Process) 0..44 maps to combos.txt line order; each job's first stdout line
+# echoes its misfit/optimizer and the assigned GPU.
+queue combo from hpc/elastic_full_das/combos.txt
