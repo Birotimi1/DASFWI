@@ -1,9 +1,16 @@
-"""STANDALONE elastic (Vp + Vs) DAS-FWI script (novice-friendly).
+"""STANDALONE elastic (Vp + Vs + density) DAS-FWI script (novice-friendly).
 
 WHAT THIS DOES
 --------------
-Joint Vp/Vs full-waveform inversion where the observed data are DAS STRAIN
-RATES on vertical fibers. For a straight VERTICAL fiber the E3 endpoint
+Joint Vp/Vs/density full-waveform inversion where the observed data are DAS
+STRAIN RATES on vertical fibers. All three parameters are updated
+simultaneously; each initial model is a 180 m x 180 m Gaussian smooth of the
+corresponding TRUE Marmousi2 field (get_smooth_marmousi_model, kernel=4 on the
+45 m grid = 180 m). NOTE: density is weakly constrained in FWI (strong
+velocity/impedance trade-off, more so with limited-aperture DAS) - expect Vp
+and Vs to recover well and rho to be the noisiest of the three; that is a known
+FWI limitation, not a bug in this setup.
+For a straight VERTICAL fiber the E3 endpoint
 difference  eps_zz_rate = [v_z(z + l/2) - v_z(z - l/2)] / l  is exact in
 elastic media too, so the same differentiable operator consumes the elastic
 propagator's v_x / v_z records - again with NO strain-to-velocity
@@ -12,9 +19,9 @@ conversion anywhere; autograd builds the elastic adjoint through the layer.
 Model/survey settings follow Liu's iso-elastic Marmousi2 example
 (examples/elastic/Iso-elastic-Marmousi2-shotTop-recTop): 78 x 200 grid at
 45 m, f0 = 3 Hz integrated Ricker, nt = 2500 x 3 ms, free surface,
-nabc = 50, CONSTANT rho = 2450 (not inverted), water layer pinned to truth
-and masked from updates, fd_order = 4, checkpoint_segments = 4,
-StepLR(100, 0.75), 300 iterations.
+nabc = 50, density INVERTED jointly (true = Marmousi2 rho, initial = 180 m
+smooth), water layer pinned to truth and masked from updates, fd_order = 4,
+checkpoint_segments = 4, StepLR(100, 0.75), 300 iterations.
 
 The inversion loop lives IN THIS FILE (ADFWI's ElasticFWI is read-only for
 this project and has no DAS path); it reproduces Liu's loop structure and
@@ -95,7 +102,6 @@ F0 = 3.0                           # [Hz], integrated Ricker
 NABC, FREE_SURFACE = 50, True
 X0_SECTION = 5000.0
 SRC_EVERY, SRC_Z = 5, 2
-RHO_CONST = 2450.0                 # Liu: constant density, never inverted
 WATER_ROWS = 10                    # top rows: init pinned to truth + no grad
 FD_ORDER = 4
 CHECKPOINT_SEGMENTS = 4
@@ -139,29 +145,34 @@ def pick_device(arg=None):
 # the water rows of the initial model to the true values). For synthetic /
 # field cases follow the CASE B / CASE C notes in run_acoustic_das.py.
 # ============================================================================
-def load_model_pair():
+def load_models():
+    """True and 180 m-smoothed-initial vp, vs, rho on Liu's elastic section.
+    kernel=4 on the 45 m grid = a 180 m x 180 m Gaussian window; the same
+    smoother produces the density initial (get_smooth_marmousi_model smooths
+    vp, vs AND rho). Water rows of every initial are pinned to truth."""
     marmousi = load_marmousi_model(in_dir=str(MARMOUSI_DIR))
     x = np.linspace(X0_SECTION, X0_SECTION + DX * NX, NX)
     z = np.linspace(0, DZ * NZ, NZ)
     true_model = resample_marmousi_model(x, z, marmousi)
-    vp_true = np.asarray(true_model["vp"].T, np.float64)
-    vs_true = np.asarray(true_model["vs"].T, np.float64)
     smooth = get_smooth_marmousi_model(true_model, gaussian_kernel=4,
                                        mask_extra_detph=2, rcv_depth=8)
-    vp_init = np.asarray(smooth["vp"].T, np.float64)
-    vs_init = np.asarray(smooth["vs"].T, np.float64)
-    vp_init[:WATER_ROWS] = vp_true[:WATER_ROWS]    # Liu pins the water rows
-    vs_init[:WATER_ROWS] = vs_true[:WATER_ROWS]
-    return vp_true, vs_true, vp_init, vs_init
+    true = {k: np.asarray(true_model[k].T, np.float64) for k in ("vp", "vs", "rho")}
+    init = {k: np.asarray(smooth[k].T, np.float64) for k in ("vp", "vs", "rho")}
+    for k in ("vp", "vs", "rho"):
+        init[k][:WATER_ROWS] = true[k][:WATER_ROWS]     # Liu pins the water rows
+    return (true["vp"], true["vs"], true["rho"],
+            init["vp"], init["vs"], init["rho"])
 
 
-def build_model(vp, vs, bounds, grad, device):
-    vp_b, vs_b = bounds
+def build_model(vp, vs, rho, bounds, grad, device):
+    """grad=True makes vp, vs AND rho inversion parameters. bounds is
+    (vp_bound, vs_bound, rho_bound). auto_update_rho stays False so density is
+    a genuine free parameter, not re-derived from vp."""
+    vp_b, vs_b, rho_b = bounds
     return IsotropicElasticModel(
-        0, 0, NX, NZ, DX, DZ, vp=vp, vs=vs,
-        rho=np.ones_like(vp) * RHO_CONST,
-        vp_bound=vp_b, vs_bound=vs_b,
-        vp_grad=grad, vs_grad=grad, rho_grad=False,
+        0, 0, NX, NZ, DX, DZ, vp=vp, vs=vs, rho=rho,
+        vp_bound=vp_b, vs_bound=vs_b, rho_bound=rho_b,
+        vp_grad=grad, vs_grad=grad, rho_grad=grad,
         free_surface=FREE_SURFACE, abc_type="PML",
         abc_jerjan_alpha=0.007, nabc=NABC, auto_update_rho=False,
         device=device, dtype=torch.float32)
@@ -219,15 +230,15 @@ def main():
     print(f"=== elastic {tag} on {device}, {iterations} iterations ===",
           flush=True)
 
-    vp_true, vs_true, vp_init, vs_init = load_model_pair()
+    vp_true, vs_true, rho_true, vp_init, vs_init, rho_init = load_models()
     survey, layer = build_acquisition(device)
     n_shots = survey.source.num
     settings = RUN_SETTINGS[args.misfit]
     batch = settings["batch_size"] or n_shots
 
-    # [4] observed data: inverse crime from the TRUE elastic model
-    true_model = build_model(vp_true, vs_true, (None, None), grad=False,
-                             device=device)
+    # [4] observed data: inverse crime from the TRUE elastic model (variable rho)
+    true_model = build_model(vp_true, vs_true, rho_true, (None, None, None),
+                             grad=False, device=device)
     prop = ElasticPropagator(true_model, survey, device=device,
                              dtype=torch.float32)
     with torch.no_grad():
@@ -238,20 +249,23 @@ def main():
           flush=True)
     assert torch.isfinite(obs).all()
 
-    # [5] inversion loop (Liu's structure + Poisson clamp; see module doc)
+    # [5] inversion loop (Liu's structure + Poisson clamp; see module doc).
+    # vp, vs, rho are inverted jointly; each has its own [min,max] bound.
     bounds = ([float(vp_true.min()), float(vp_true.max())],
-              [float(vs_true.min()), float(vs_true.max())])
-    model = build_model(vp_init, vs_init, bounds, grad=True, device=device)
+              [float(vs_true.min()), float(vs_true.max())],
+              [float(rho_true.min()), float(rho_true.max())])
+    model = build_model(vp_init, vs_init, rho_init, bounds, grad=True,
+                        device=device)
     prop = ElasticPropagator(model, survey, device=device,
                              dtype=torch.float32)
-    optimizer = OPTIMIZERS[args.optimizer]([model.vp, model.vs])
+    optimizer = OPTIMIZERS[args.optimizer]([model.vp, model.vs, model.rho])
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, **SCHEDULER)
     misfit = build_misfit(args.misfit, iterations)
 
     grad_mask = torch.ones((NZ, NX), device=device)
     grad_mask[:WATER_ROWS, :] = 0
 
-    losses, iter_vp, iter_vs = [], [], []
+    losses, iter_vp, iter_vs, iter_rho = [], [], [], []
     t0 = time.time()
     for it in range(iterations):
         optimizer.zero_grad()
@@ -269,7 +283,7 @@ def main():
             loss.backward()
             loss_iter += float(loss)
         with torch.no_grad():
-            for par in (model.vp, model.vs):
+            for par in (model.vp, model.vs, model.rho):
                 par.grad *= grad_mask                        # Liu's mask
                 if args.optimizer == "sgd":                  # norm_grad
                     peak = par.grad.abs().max().clamp_min(1e-30)
@@ -284,6 +298,7 @@ def main():
         if it % CACHE_EVERY == 0 or it == iterations - 1:
             iter_vp.append(model.vp.detach().cpu().numpy().copy())
             iter_vs.append(model.vs.detach().cpu().numpy().copy())
+            iter_rho.append(model.rho.detach().cpu().numpy().copy())
         print(f"iter {it}: loss {loss_iter:.6f} "
               f"({(time.time()-t0)/(it+1):.0f}s/iter)", flush=True)
 
@@ -292,15 +307,19 @@ def main():
     # [6] outputs
     np.savez(out_dir / "iter_vp.npz", data=np.asarray(iter_vp))
     np.savez(out_dir / "iter_vs.npz", data=np.asarray(iter_vs))
+    np.savez(out_dir / "iter_rho.npz", data=np.asarray(iter_rho))
     np.savez(out_dir / "iter_loss.npz", data=np.asarray(losses))
     vp_final = model.vp.detach().cpu().numpy()
     vs_final = model.vs.detach().cpu().numpy()
+    rho_final = model.rho.detach().cpu().numpy()
 
     metrics = dict(tag=tag, device=device, iterations=iterations,
                    runtime_h=round(hours, 3),
                    losses_finite=bool(np.isfinite(losses).all()))
-    for nm, tru, ini, fin in (("vp", vp_true, vp_init, vp_final),
-                              ("vs", vs_true, vs_init, vs_final)):
+    triplet = (("vp", vp_true, vp_init, vp_final),
+               ("vs", vs_true, vs_init, vs_final),
+               ("rho", rho_true, rho_init, rho_final))
+    for nm, tru, ini, fin in triplet:
         dt_, di = tru - ini, fin - ini
         denom = np.sqrt((dt_ ** 2).sum() * (di ** 2).sum())
         metrics[f"rms_init_{nm}"] = float(np.sqrt(((ini - tru) ** 2).mean()))
@@ -310,16 +329,17 @@ def main():
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
     print(json.dumps(metrics, indent=2), flush=True)
 
-    fig, axes = plt.subplots(2, 3, figsize=(18, 8), constrained_layout=True)
+    # 3 rows (vp/vs/rho) x 3 cols (true/initial/inverted); each row on its own
+    # colour scale (rho ~2000-2600 kg/m^3, velocities in m/s).
+    fig, axes = plt.subplots(3, 3, figsize=(18, 12), constrained_layout=True)
     ext = [0, (NX - 1) * DX / 1000, (NZ - 1) * DZ / 1000, 0]
-    for r, (nm, tru, ini, fin) in enumerate(
-            (("vp", vp_true, vp_init, vp_final),
-             ("vs", vs_true, vs_init, vs_final))):
+    units = {"vp": "m/s", "vs": "m/s", "rho": "kg/m^3"}
+    for r, (nm, tru, ini, fin) in enumerate(triplet):
         for c, (d, ttl) in enumerate([(tru, "true"), (ini, "initial"),
                                       (fin, "inverted")]):
             im = axes[r, c].imshow(d, extent=ext, cmap="jet",
                                    vmin=tru.min(), vmax=tru.max())
-            axes[r, c].set(title=f"{nm} {ttl} [m/s]", xlabel="x [km]",
+            axes[r, c].set(title=f"{nm} {ttl} [{units[nm]}]", xlabel="x [km]",
                            ylabel="z [km]")
             fig.colorbar(im, ax=axes[r, c], shrink=0.8)
     fig.savefig(out_dir / "final.png", dpi=150)

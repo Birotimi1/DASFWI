@@ -202,8 +202,10 @@ def main():
         n_fig = math.ceil(len(items) / per)
         for fi in range(n_fig):
             chunk = items[fi * per:(fi + 1) * per]
-            # the original (true) model leads figure 1 as a reference panel
-            page = ([("ORIGINAL Marmousi Vp (true model)", vp_true)] if fi == 0
+            # figure 1 leads with the two reference models: the TRUE Marmousi Vp
+            # we aim to recover, and the INITIAL smoothed Vp we invert FROM.
+            page = ([("ORIGINAL Marmousi Vp (true model)", vp_true),
+                     ("INITIAL Vp (smoothed start)", vp_init)] if fi == 0
                     else []) + chunk
             k = len(page)
             ncol = max(1, math.ceil(k / 2))     # ~2 rows -> uniform panel height
@@ -215,7 +217,7 @@ def main():
             for i, (ax, (title, data)) in enumerate(zip(flat, page)):
                 im_v = show(ax, data, title, args.cmap, vmin, vmax,
                             xlab=(i >= k - ncol), ylab=(i % ncol == 0),
-                            fibers=(title.startswith("ORIGINAL")))
+                            fibers=(title.startswith(("ORIGINAL", "INITIAL"))))
             for ax in flat[k:]:
                 ax.axis("off")
             fig.colorbar(im_v, ax=axes.ravel().tolist(), shrink=0.7,
