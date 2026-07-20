@@ -130,6 +130,7 @@ def main():
 
     hours = (time.time() - t0) / 3600.0
 
+    out_dir.mkdir(parents=True, exist_ok=True)   # re-create if it was removed mid-run
     np.savez(out_dir / "iter_vp.npz", data=np.asarray(iter_vp))
     np.savez(out_dir / "iter_vs.npz", data=np.asarray(iter_vs))
     np.savez(out_dir / "iter_loss.npz", data=np.asarray(losses))
