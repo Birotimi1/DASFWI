@@ -23,20 +23,24 @@ except Exception:                                # pragma: no cover
     gaussian_filter = None
 
 
-def illumination_weight(illum, power=2.0, epsilon=1e-3, sigma=6.0, max_boost=1e3):
+def illumination_weight(illum, power=1.0, epsilon=1e-3, sigma=6.0, max_boost=1e3):
     """Return a per-cell preconditioner weight from a forward-illumination map.
 
     Args:
         illum: 2D forward-wavefield energy (torch tensor or ndarray), (nz, nx).
-        power: exponent on the (inverse) illumination (2 = ADFWI acoustic
-            GradProcessor default; 1 = gentler diagonal Hessian).
+        power: exponent on the (inverse) illumination. Default 1 = the textbook
+            diagonal-(Gauss-Newton)-Hessian preconditioner, grad/diag(H), which
+            with epsilon=1e-3 self-limits at 1000x -- so no arbitrary cap is
+            needed and it over-amplifies deep noise far less than power=2
+            (ADFWI's aggressive heuristic, which our loop only norm_grad-rescales
+            for SGD, so it destabilized the adam-family / envelope).
         epsilon: relative floor on the normalized illumination, so the raw
-            boost is 1/epsilon**power (epsilon=1e-3, power=2 -> up to 1e6).
+            boost is 1/epsilon**power (epsilon=1e-3, power=1 -> up to 1e3).
         sigma: Gaussian smoothing (nodes) applied to the illumination before
             forming the weight; stabilizes the preconditioner. 0 disables.
-        max_boost: hard cap on the weight. The raw power-2 boost can reach 1e6,
-            which pushed fragile misfits (envelope) into a NaN over 300 iters;
-            capping at ~1e3 keeps a strong deep boost but prevents blow-up.
+        max_boost: hard cap on the weight (harmless backstop at power=1, which
+            already tops out at 1/epsilon=1e3; still protective if power=2 is
+            used).
 
     Returns:
         same type as `illum` (torch tensor on the same device/dtype, or ndarray)
