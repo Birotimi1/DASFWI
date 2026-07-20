@@ -1,20 +1,23 @@
-"""Shared setup for the full-Marmousi2 ELASTIC 3-parameter DAS campaign.
+"""Shared setup for the full-Marmousi2 ELASTIC (Vp/Vs) DAS campaign.
 
-Scientific question: can DAS strain-rate FWI recover Vp, Vs AND density jointly
-on Liu's iso-elastic Marmousi2 section, across the full misfit x optimizer grid?
+Scientific question: can DAS strain-rate FWI recover Vp and Vs on Liu's
+iso-elastic Marmousi2 section, across the full misfit x optimizer grid, and does
+illumination (diagonal-Hessian) preconditioning improve deep recovery?
 
 Everything follows Liu's iso-elastic Marmousi2 example
 (examples/elastic/Iso-elastic-Marmousi2-shotTop-recTop) except the receiver
 side (vertical-fiber DAS strain rate through the E3 operator, no strain-to-
-velocity conversion) and the extension to a THREE-parameter inversion:
+velocity conversion):
 
     grid          nz, nx = 78, 200 at dx = dz = 45 m  (x0 = 5000 m section)
     time          nt, dt = 2500, 0.003 s;  f0 = 3 Hz integrated Ricker
     source        integrated Ricker, mt type, every 5th x-node at z-index 2
     model         free_surface=True, PML, nabc=50, fd_order=4
-    parameters    Vp + Vs + DENSITY inverted jointly (rho a genuine free
-                  parameter: rho_grad=True, auto_update_rho=False)
-    init models   180 m x 180 m Gaussian smooth of every true field
+    parameters    Vp + Vs inverted; DENSITY held CONSTANT at 2450 kg/m^3 and
+                  shared by the observed + inversion models. (A 3-parameter run
+                  that also inverted rho diverged in density and dragged Vp/Vs
+                  down, so density is fixed here per finding #5.)
+    init models   180 m x 180 m Gaussian smooth of the true Vp/Vs
                   (get_smooth_marmousi_model kernel=4 on the 45 m grid),
                   water rows pinned to truth
     constraints   vs <= vp / 1.5 Poisson clamp after every step; top 10 rows
@@ -22,8 +25,8 @@ velocity conversion) and the extension to a THREE-parameter inversion:
     inversion     300 iterations, StepLR(step_size=100, gamma=0.75)
 
 DAS receiver side: 4 vertical fibers, 90 m gauge (l = 2*dz), strain rate via
-DASObservationLayer. NOTE density is weakly constrained in FWI - expect Vp/Vs
-to recover better than rho.
+DASObservationLayer. The illumination A/B (see run_one.py --precond) is on the
+Vp/Vs gradients.
 
 Paths (HPC-portable, override by environment):
     ADFWI_ROOT      default ../ADFWI next to the repo, else ADFWI_local.
@@ -82,6 +85,7 @@ SRC_EVERY, SRC_Z = 5, 2
 FD_ORDER = 4
 CHECKPOINT_SEGMENTS = 4
 WATER_ROWS = 10
+RHO_CONST = 2450.0                 # density held constant (not inverted)
 SMOOTH_KERNEL = 4                  # 4 nodes * 45 m = 180 m Gaussian window
 ITERATIONS = 300
 SCHEDULER = dict(step_size=100, gamma=0.75)
@@ -120,32 +124,34 @@ def build_misfit(name, iterations=ITERATIONS):
 
 
 def load_models():
-    """True and 180 m-smoothed-initial vp, vs, rho on Liu's elastic section.
-    get_smooth_marmousi_model smooths vp, vs AND rho with the same kernel;
-    every initial has its water rows pinned to truth."""
+    """True and 180 m-smoothed-initial vp, vs on Liu's elastic section (density
+    is held constant at RHO_CONST, not inverted). Water rows of the initials
+    pinned to truth."""
     marmousi = load_marmousi_model(in_dir=str(MARMOUSI_DIR))
     x = np.linspace(X0_SECTION, X0_SECTION + DX * NX, NX)
     z = np.linspace(0, DZ * NZ, NZ)
     true_model = resample_marmousi_model(x, z, marmousi)
     smooth = get_smooth_marmousi_model(true_model, gaussian_kernel=SMOOTH_KERNEL,
                                        mask_extra_detph=2, rcv_depth=8)
-    true = {k: np.asarray(true_model[k].T, np.float64) for k in ("vp", "vs", "rho")}
-    init = {k: np.asarray(smooth[k].T, np.float64) for k in ("vp", "vs", "rho")}
-    for k in ("vp", "vs", "rho"):
-        init[k][:WATER_ROWS] = true[k][:WATER_ROWS]
-    return (true["vp"], true["vs"], true["rho"],
-            init["vp"], init["vs"], init["rho"])
+    vp_true = np.asarray(true_model["vp"].T, np.float64)
+    vs_true = np.asarray(true_model["vs"].T, np.float64)
+    vp_init = np.asarray(smooth["vp"].T, np.float64)
+    vs_init = np.asarray(smooth["vs"].T, np.float64)
+    vp_init[:WATER_ROWS] = vp_true[:WATER_ROWS]
+    vs_init[:WATER_ROWS] = vs_true[:WATER_ROWS]
+    return vp_true, vs_true, vp_init, vs_init
 
 
-def build_model(vp, vs, rho, bounds, grad, device, dtype=torch.float32):
-    """grad=True makes vp, vs AND rho inversion parameters. bounds is
-    (vp_bound, vs_bound, rho_bound). auto_update_rho=False keeps rho a genuine
-    free parameter (not re-derived from vp)."""
-    vp_b, vs_b, rho_b = bounds
+def build_model(vp, vs, bounds, grad, device, dtype=torch.float32):
+    """grad=True makes vp, vs inversion parameters. Density is held CONSTANT at
+    RHO_CONST (rho_grad=False, auto_update_rho=False) -- a joint density
+    inversion diverged under this DAS acquisition. bounds = (vp_bound, vs_bound)."""
+    vp_b, vs_b = bounds
     return IsotropicElasticModel(
-        0, 0, NX, NZ, DX, DZ, vp=vp, vs=vs, rho=rho,
-        vp_bound=vp_b, vs_bound=vs_b, rho_bound=rho_b,
-        vp_grad=grad, vs_grad=grad, rho_grad=grad,
+        0, 0, NX, NZ, DX, DZ, vp=vp, vs=vs,
+        rho=np.ones_like(vp) * RHO_CONST,
+        vp_bound=vp_b, vs_bound=vs_b,
+        vp_grad=grad, vs_grad=grad, rho_grad=False,
         free_surface=FREE_SURFACE, abc_type="PML",
         abc_jerjan_alpha=0.007, nabc=NABC, auto_update_rho=False,
         device=device, dtype=dtype)

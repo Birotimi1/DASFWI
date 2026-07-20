@@ -16,7 +16,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import (OUT_ROOT, OBS_FILE, FD_ORDER, CHECKPOINT_SEGMENTS,
+from common import (OUT_ROOT, OBS_FILE, FD_ORDER, CHECKPOINT_SEGMENTS, RHO_CONST,
                     pick_device, load_models, build_model, build_acquisition,
                     ElasticPropagator)
 
@@ -31,17 +31,16 @@ def main():
     device = pick_device(args.device)
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
 
-    vp_true, vs_true, rho_true, vp_init, vs_init, rho_init = load_models()
+    vp_true, vs_true, vp_init, vs_init = load_models()
     print(f"vp_true {vp_true.shape} {vp_true.min():.0f}-{vp_true.max():.0f}; "
           f"vs {vs_true.min():.0f}-{vs_true.max():.0f}; "
-          f"rho {rho_true.min():.0f}-{rho_true.max():.0f}; device {device}",
-          flush=True)
+          f"rho const {RHO_CONST:.0f}; device {device}", flush=True)
 
     survey, layer, geometry = build_acquisition(device)
     print(f"fibers: C = {geometry.C} channels, n_rcv = {geometry.n_rcv}, "
           f"shots = {survey.source.num}", flush=True)
 
-    true_model = build_model(vp_true, vs_true, rho_true, (None, None, None),
+    true_model = build_model(vp_true, vs_true, (None, None),
                              grad=False, device=device)
     prop = ElasticPropagator(true_model, survey, device=device,
                              dtype=torch.float32)
@@ -57,8 +56,8 @@ def main():
 
     np.savez(OUT_ROOT / OBS_FILE, strain_rate=obs_sr.numpy())
     np.savez(OUT_ROOT / "setup.npz",
-             vp_true=vp_true, vs_true=vs_true, rho_true=rho_true,
-             vp_init=vp_init, vs_init=vs_init, rho_init=rho_init,
+             vp_true=vp_true, vs_true=vs_true,
+             vp_init=vp_init, vs_init=vs_init, rho_const=RHO_CONST,
              channel_z=geometry.channel_z,
              fiber_of_channel=geometry.fiber_of_channel.numpy(),
              rcv_pos=np.asarray(geometry.rcv_pos))

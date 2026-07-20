@@ -8,9 +8,9 @@ Requires generate_obs.py to have produced $DASFWI_RESULTS/obs_data_das.npz.
 ADFWI's ElasticFWI has no DAS path, so the inversion loop lives here (Liu's
 structure + the vs<=vp/1.5 Poisson clamp). Outputs per combo into
 $DASFWI_RESULTS/<misfit>_<optimizer>/:
-    iter_vp.npz, iter_vs.npz, iter_rho.npz, iter_loss.npz
-    metrics.json   (rms_init/final + update_corr for vp, vs, rho)
-    final.png      (3x3: vp/vs/rho x true/init/inverted)
+    iter_vp.npz, iter_vs.npz, iter_loss.npz
+    metrics.json   (rms_init/final + update_corr + deep rms for vp, vs)
+    final.png      (2x3: vp/vs x true/init/inverted)
 """
 import argparse
 import json
@@ -60,7 +60,7 @@ def main():
     print(f"=== elastic {tag} on {device}, {iterations} iterations ===",
           flush=True)
 
-    vp_true, vs_true, rho_true, vp_init, vs_init, rho_init = load_models()
+    vp_true, vs_true, vp_init, vs_init = load_models()
     survey, layer, _geom = build_acquisition(device)
     n_shots = survey.source.num
     settings = MISFIT_RUN_SETTINGS[args.misfit]
@@ -72,19 +72,17 @@ def main():
           flush=True)
 
     bounds = ([float(vp_true.min()), float(vp_true.max())],
-              [float(vs_true.min()), float(vs_true.max())],
-              [float(rho_true.min()), float(rho_true.max())])
-    model = build_model(vp_init, vs_init, rho_init, bounds, grad=True,
-                        device=device)
+              [float(vs_true.min()), float(vs_true.max())])
+    model = build_model(vp_init, vs_init, bounds, grad=True, device=device)
     prop = ElasticPropagator(model, survey, device=device, dtype=torch.float32)
-    optimizer = OPTIMIZERS[args.optimizer]([model.vp, model.vs, model.rho])
+    optimizer = OPTIMIZERS[args.optimizer]([model.vp, model.vs])
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, **SCHEDULER)
     misfit = build_misfit(args.misfit, iterations)
 
     grad_mask = torch.ones((NZ, NX), device=device)
     grad_mask[:WATER_ROWS, :] = 0
 
-    losses, iter_vp, iter_vs, iter_rho = [], [], [], []
+    losses, iter_vp, iter_vs = [], [], []
     t0 = time.time()
     for it in range(iterations):
         optimizer.zero_grad()
@@ -107,11 +105,10 @@ def main():
                       + rec["forward_wavefield_vz"]).detach()
                 illum = fw if illum is None else illum + fw
         with torch.no_grad():
-            # diagonal-Hessian (illumination) preconditioner weight, shared
-            # across vp/vs/rho (ADFWI applies one source illumination to all).
+            # diagonal-Hessian (illumination) preconditioner weight on Vp/Vs
             weight = (illumination_weight(illum) if args.precond == "illum"
                       and illum is not None else None)
-            for par in (model.vp, model.vs, model.rho):
+            for par in (model.vp, model.vs):
                 par.grad *= grad_mask                          # Liu's mask
                 if weight is not None:                         # lift deep cells
                     par.grad *= weight
@@ -128,7 +125,6 @@ def main():
         if it % CACHE_EVERY == 0 or it == iterations - 1:
             iter_vp.append(model.vp.detach().cpu().numpy().copy())
             iter_vs.append(model.vs.detach().cpu().numpy().copy())
-            iter_rho.append(model.rho.detach().cpu().numpy().copy())
         print(f"iter {it}: loss {loss_iter:.6f} "
               f"({(time.time()-t0)/(it+1):.0f}s/iter)", flush=True)
 
@@ -136,11 +132,9 @@ def main():
 
     np.savez(out_dir / "iter_vp.npz", data=np.asarray(iter_vp))
     np.savez(out_dir / "iter_vs.npz", data=np.asarray(iter_vs))
-    np.savez(out_dir / "iter_rho.npz", data=np.asarray(iter_rho))
     np.savez(out_dir / "iter_loss.npz", data=np.asarray(losses))
     vp_final = model.vp.detach().cpu().numpy()
     vs_final = model.vs.detach().cpu().numpy()
-    rho_final = model.rho.detach().cpu().numpy()
 
     metrics = dict(tag=tag, device=device, iterations=iterations,
                    misfit=args.misfit, optimizer=args.optimizer,
@@ -148,8 +142,7 @@ def main():
                    loss_first=float(losses[0]), loss_last=float(losses[-1]),
                    losses_finite=bool(np.isfinite(losses).all()))
     triplet = (("vp", vp_true, vp_init, vp_final),
-               ("vs", vs_true, vs_init, vs_final),
-               ("rho", rho_true, rho_init, rho_final))
+               ("vs", vs_true, vs_init, vs_final))
     deep = slice(NZ // 2, NZ)          # deep HALF of the section (below ~mid-z):
     #                                    where illumination preconditioning acts
     for nm, tru, ini, fin in triplet:
@@ -167,9 +160,9 @@ def main():
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
     print(json.dumps(metrics, indent=2), flush=True)
 
-    fig, axes = plt.subplots(3, 3, figsize=(18, 12), constrained_layout=True)
+    fig, axes = plt.subplots(2, 3, figsize=(18, 8), constrained_layout=True)
     ext = [0, (NX - 1) * DX / 1000, (NZ - 1) * DZ / 1000, 0]
-    units = {"vp": "m/s", "vs": "m/s", "rho": "kg/m^3"}
+    units = {"vp": "m/s", "vs": "m/s"}
     for r, (nm, tru, ini, fin) in enumerate(triplet):
         for c, (d, ttl) in enumerate([(tru, "true"), (ini, "initial"),
                                       (fin, f"inverted ({tag})")]):

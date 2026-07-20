@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Rank the elastic 3-parameter DAS campaign, with the illumination-precond A/B.
+"""Rank the elastic Vp/Vs DAS campaign, with the illumination-precond A/B.
 
 Reads results/elastic_full_das/<misfit>_<optimizer>_<illum|noillum>/metrics.json.
-Per parameter p in {vp, vs, rho}:
+Per parameter p in {vp, vs} (density is held constant, not inverted):
     score_p = update_corr_p * max(0, 1 - rms_final_p / rms_init_p)
-Combined ranking = mean of the WELL-CONSTRAINED velocities (vp, vs); rho is
-reported but does not drive the ranking. Also reports DEEP-half dRMS (where the
+Combined ranking = mean of (vp, vs). Also reports DEEP-half dRMS (where the
 illumination preconditioner acts) and an A/B summary: for each base combo,
 illum vs off, and whether illumination improved deep recovery.
 
@@ -50,7 +49,7 @@ def _load(results):
                                              else "off")
         m["_base"] = f"{m.get('misfit','?')}_{m.get('optimizer','?')}"
         m["_score"] = 0.5 * (_pscore(m, "vp") + _pscore(m, "vs"))
-        for p in ("vp", "vs", "rho"):
+        for p in ("vp", "vs"):
             m[f"_d_{p}"] = _drms(m, p)
             m[f"_dd_{p}"] = _drms(m, p, deep=True)      # deep-half dRMS
         rows.append(m)
@@ -70,16 +69,16 @@ def main():
     rows.sort(key=lambda m: m["_score"], reverse=True)
 
     hdr = (f"{'#':>2} {'combo':16}{'prec':>6}{'score':>7} | "
-           f"{'vp dRMS%':>9}{'deep':>6} | {'vs dRMS%':>9}{'deep':>6} | "
-           f"{'rho dRMS%':>10} |{'h':>5} ok")
+           f"{'vp dRMS%':>9}{'deep':>6} | {'vs dRMS%':>9}{'deep':>6} |"
+           f"{'h':>5} ok")
     print(hdr)
     print("-" * len(hdr))
     for i, m in enumerate(rows, 1):
         ok = "OK" if m.get("losses_finite", False) else "NAN"
         print(f"{i:2d} {m['_base']:16}{m['_precond']:>6}{m['_score']:7.3f} | "
               f"{m['_d_vp']:9.1f}{m['_dd_vp']:6.0f} | "
-              f"{m['_d_vs']:9.1f}{m['_dd_vs']:6.0f} | "
-              f"{m['_d_rho']:10.1f} |{m.get('runtime_h', 0):5.2f} {ok}")
+              f"{m['_d_vs']:9.1f}{m['_dd_vs']:6.0f} |"
+              f"{m.get('runtime_h', 0):5.2f} {ok}")
 
     # --- A/B: illum vs off per base combo, on DEEP velocity recovery ----------
     by_base = {}
@@ -115,8 +114,8 @@ def main():
     if args.csv:
         import csv
         cols = ["_base", "_precond", "_score", "_d_vp", "_dd_vp", "_d_vs",
-                "_dd_vs", "_d_rho", "update_corr_vp", "update_corr_vs",
-                "update_corr_rho", "runtime_h", "losses_finite"]
+                "_dd_vs", "update_corr_vp", "update_corr_vs", "runtime_h",
+                "losses_finite"]
         with open(args.csv, "w", newline="") as fh:
             w = csv.writer(fh)
             w.writerow([c.lstrip("_") for c in cols])
