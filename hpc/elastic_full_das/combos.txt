@@ -1,45 +1,90 @@
-l2 sgd
-l2 adagrad
-l2 adam
-l2 adamw
-l2 nadam
-envelope sgd
-envelope adagrad
-envelope adam
-envelope adamw
-envelope nadam
-gc sgd
-gc adagrad
-gc adam
-gc adamw
-gc nadam
-sdtw sgd
-sdtw adagrad
-sdtw adam
-sdtw adamw
-sdtw nadam
-sinkhorn sgd
-sinkhorn adagrad
-sinkhorn adam
-sinkhorn adamw
-sinkhorn nadam
-weci sgd
-weci adagrad
-weci adam
-weci adamw
-weci nadam
-traveltime sgd
-traveltime adagrad
-traveltime adam
-traveltime adamw
-traveltime nadam
-nim sgd
-nim adagrad
-nim adam
-nim adamw
-nim nadam
-convsi sgd
-convsi adagrad
-convsi adam
-convsi adamw
-convsi nadam
+l2 sgd illum
+l2 sgd off
+l2 adagrad illum
+l2 adagrad off
+l2 adam illum
+l2 adam off
+l2 adamw illum
+l2 adamw off
+l2 nadam illum
+l2 nadam off
+envelope sgd illum
+envelope sgd off
+envelope adagrad illum
+envelope adagrad off
+envelope adam illum
+envelope adam off
+envelope adamw illum
+envelope adamw off
+envelope nadam illum
+envelope nadam off
+gc sgd illum
+gc sgd off
+gc adagrad illum
+gc adagrad off
+gc adam illum
+gc adam off
+gc adamw illum
+gc adamw off
+gc nadam illum
+gc nadam off
+sdtw sgd illum
+sdtw sgd off
+sdtw adagrad illum
+sdtw adagrad off
+sdtw adam illum
+sdtw adam off
+sdtw adamw illum
+sdtw adamw off
+sdtw nadam illum
+sdtw nadam off
+sinkhorn sgd illum
+sinkhorn sgd off
+sinkhorn adagrad illum
+sinkhorn adagrad off
+sinkhorn adam illum
+sinkhorn adam off
+sinkhorn adamw illum
+sinkhorn adamw off
+sinkhorn nadam illum
+sinkhorn nadam off
+weci sgd illum
+weci sgd off
+weci adagrad illum
+weci adagrad off
+weci adam illum
+weci adam off
+weci adamw illum
+weci adamw off
+weci nadam illum
+weci nadam off
+traveltime sgd illum
+traveltime sgd off
+traveltime adagrad illum
+traveltime adagrad off
+traveltime adam illum
+traveltime adam off
+traveltime adamw illum
+traveltime adamw off
+traveltime nadam illum
+traveltime nadam off
+nim sgd illum
+nim sgd off
+nim adagrad illum
+nim adagrad off
+nim adam illum
+nim adam off
+nim adamw illum
+nim adamw off
+nim nadam illum
+nim nadam off
+convsi sgd illum
+convsi sgd off
+convsi adagrad illum
+convsi adagrad off
+convsi adam illum
+convsi adam off
+convsi adamw illum
+convsi adamw off
+convsi nadam illum
+convsi nadam off

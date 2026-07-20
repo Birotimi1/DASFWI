@@ -86,6 +86,7 @@ from das.geometry import FiberGeometry, merge_fibers
 from das.das_layer import DASObservationLayer
 from inversion import config          # single source of truth for techniques
 from inversion.safe_misfits import apply_misfit   # NIM dispatch in the loop
+from inversion.preconditioner import illumination_weight   # depth precond
 
 # ============================================================================
 # [1] PARAMETERS
@@ -218,12 +219,17 @@ def main():
                     choices=sorted(OPTIMIZERS))
     ap.add_argument("--iterations", type=int, default=ITERATIONS)
     ap.add_argument("--device", default=None)
+    ap.add_argument("--precond", choices=["illum", "off"], default="illum",
+                    help="illum = divide gradient by source illumination "
+                         "(diagonal-Hessian preconditioner, lifts deep cells); "
+                         "off = baseline (water mask only)")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
 
     device = pick_device(args.device)
     iterations = 2 if args.smoke else args.iterations
-    tag = (f"das_{args.misfit}_{args.optimizer}"
+    tag = (f"das_{args.misfit}_{args.optimizer}_"
+           + ("illum" if args.precond == "illum" else "noillum")
            + ("_smoke" if args.smoke else ""))
     out_dir = OUT_ROOT / tag
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -270,6 +276,7 @@ def main():
     for it in range(iterations):
         optimizer.zero_grad()
         loss_iter = 0.0
+        illum = None                                         # source illumination
         for b0 in range(0, n_shots, batch):
             shot_index = np.arange(b0, min(b0 + batch, n_shots))
             rec = prop.forward(model=model, shot_index=shot_index,
@@ -282,9 +289,17 @@ def main():
             loss = apply_misfit(misfit, syn, o)   # dispatches NIM's .apply
             loss.backward()
             loss_iter += float(loss)
+            if args.precond == "illum":                      # accumulate diag(H)
+                fw = (rec["forward_wavefield_vx"]
+                      + rec["forward_wavefield_vz"]).detach()
+                illum = fw if illum is None else illum + fw
         with torch.no_grad():
+            weight = (illumination_weight(illum) if args.precond == "illum"
+                      and illum is not None else None)
             for par in (model.vp, model.vs, model.rho):
                 par.grad *= grad_mask                        # Liu's mask
+                if weight is not None:                       # lift deep cells
+                    par.grad *= weight
                 if args.optimizer == "sgd":                  # norm_grad
                     peak = par.grad.abs().max().clamp_min(1e-30)
                     par.grad *= float(par.detach().max()) / peak

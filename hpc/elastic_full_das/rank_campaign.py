@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Rank the elastic 3-parameter DAS campaign by recovery quality.
+"""Rank the elastic 3-parameter DAS campaign, with the illumination-precond A/B.
 
-Reads results/elastic_full_das/<misfit>_<optimizer>/metrics.json and prints a
-table. Per parameter p in {vp, vs, rho}:
+Reads results/elastic_full_das/<misfit>_<optimizer>_<illum|noillum>/metrics.json.
+Per parameter p in {vp, vs, rho}:
     score_p = update_corr_p * max(0, 1 - rms_final_p / rms_init_p)
-The combined ranking uses the mean of the WELL-CONSTRAINED velocities
-(vp, vs); density is weakly constrained in FWI so it is reported but does not
-drive the ranking. A non-finite (diverged) run scores 0.
+Combined ranking = mean of the WELL-CONSTRAINED velocities (vp, vs); rho is
+reported but does not drive the ranking. Also reports DEEP-half dRMS (where the
+illumination preconditioner acts) and an A/B summary: for each base combo,
+illum vs off, and whether illumination improved deep recovery.
 
     python hpc/elastic_full_das/rank_campaign.py
     python hpc/elastic_full_das/rank_campaign.py --csv ranking.csv
@@ -30,63 +31,95 @@ def _pscore(m, p):
     return m.get(f"update_corr_{p}", 0.0) * frac
 
 
+def _drms(m, p, deep=False):
+    key = "rms_%s_deep_%s" if deep else "rms_%s_%s"
+    ri, rf = m.get(key % ("init", p), 0.0), m.get(key % ("final", p), 0.0)
+    return 100.0 * (ri - rf) / ri if ri > 0 else 0.0
+
+
+def _load(results):
+    rows = []
+    for f in sorted(glob.glob(os.path.join(results, "*", "metrics.json"))):
+        try:
+            m = json.load(open(f))
+        except Exception as e:                       # noqa: BLE001
+            print(f"  skip {f}: {e}", file=sys.stderr)
+            continue
+        m["_precond"] = m.get("precond") or ("illum" if m.get("tag", "").endswith("illum")
+                                             and not m.get("tag", "").endswith("noillum")
+                                             else "off")
+        m["_base"] = f"{m.get('misfit','?')}_{m.get('optimizer','?')}"
+        m["_score"] = 0.5 * (_pscore(m, "vp") + _pscore(m, "vs"))
+        for p in ("vp", "vs", "rho"):
+            m[f"_d_{p}"] = _drms(m, p)
+            m[f"_dd_{p}"] = _drms(m, p, deep=True)      # deep-half dRMS
+        rows.append(m)
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", default=_DEFAULT)
     ap.add_argument("--csv", default=None)
     args = ap.parse_args()
 
-    files = sorted(glob.glob(os.path.join(args.results, "*", "metrics.json")))
-    if not files:
+    rows = _load(args.results)
+    if not rows:
         print(f"no metrics.json under {args.results}", file=sys.stderr)
         sys.exit(1)
-
-    rows = []
-    for f in files:
-        try:
-            m = json.load(open(f))
-        except Exception as e:                       # noqa: BLE001
-            print(f"  skip {f}: {e}", file=sys.stderr)
-            continue
-        for p in ("vp", "vs", "rho"):
-            m[f"_s_{p}"] = _pscore(m, p)
-            ri = m.get(f"rms_init_{p}", 0)
-            m[f"_d_{p}"] = (100.0 * (ri - m.get(f"rms_final_{p}", 0)) / ri
-                            if ri > 0 else 0.0)
-        m["_score"] = 0.5 * (m["_s_vp"] + m["_s_vs"])       # velocity-driven
-        rows.append(m)
     rows.sort(key=lambda m: m["_score"], reverse=True)
 
-    hdr = (f"{'#':>2} {'combo':20}{'score':>7} | "
-           f"{'vp:dRMS%':>9}{'corr':>6}{'sc':>6} | "
-           f"{'vs:dRMS%':>9}{'corr':>6}{'sc':>6} | "
-           f"{'rho:dRMS%':>10}{'corr':>6}{'sc':>6} | {'h':>5} ok")
+    hdr = (f"{'#':>2} {'combo':16}{'prec':>6}{'score':>7} | "
+           f"{'vp dRMS%':>9}{'deep':>6} | {'vs dRMS%':>9}{'deep':>6} | "
+           f"{'rho dRMS%':>10} |{'h':>5} ok")
     print(hdr)
     print("-" * len(hdr))
     for i, m in enumerate(rows, 1):
         ok = "OK" if m.get("losses_finite", False) else "NAN"
-        print(f"{i:2d} {m['tag']:20}{m['_score']:7.3f} | "
-              f"{m['_d_vp']:9.1f}{m.get('update_corr_vp', 0):6.2f}{m['_s_vp']:6.2f} | "
-              f"{m['_d_vs']:9.1f}{m.get('update_corr_vs', 0):6.2f}{m['_s_vs']:6.2f} | "
-              f"{m['_d_rho']:10.1f}{m.get('update_corr_rho', 0):6.2f}{m['_s_rho']:6.2f} | "
-              f"{m.get('runtime_h', 0):5.2f} {ok}")
+        print(f"{i:2d} {m['_base']:16}{m['_precond']:>6}{m['_score']:7.3f} | "
+              f"{m['_d_vp']:9.1f}{m['_dd_vp']:6.0f} | "
+              f"{m['_d_vs']:9.1f}{m['_dd_vs']:6.0f} | "
+              f"{m['_d_rho']:10.1f} |{m.get('runtime_h', 0):5.2f} {ok}")
 
-    nfin = sum(1 for m in rows if m.get("losses_finite", False))
-    print(f"\n{len(rows)}/45 complete  ({nfin} finite)")
+    # --- A/B: illum vs off per base combo, on DEEP velocity recovery ----------
+    by_base = {}
+    for m in rows:
+        by_base.setdefault(m["_base"], {})[m["_precond"]] = m
+    pairs = [(b, d["illum"], d["off"]) for b, d in by_base.items()
+             if "illum" in d and "off" in d]
+    print(f"\n=== illumination A/B on DEEP (vp+vs) recovery "
+          f"({len(pairs)} paired combos) ===")
+    if pairs:
+        gains = []
+        print(f"{'combo':16}{'deep illum':>12}{'deep off':>10}{'gain(pts)':>11}")
+        # deep vp+vs dRMS mean per side
+        def deep_vpvs(m):
+            return 0.5 * (m["_dd_vp"] + m["_dd_vs"])
+        for b, mi, mo in sorted(pairs, key=lambda t: deep_vpvs(t[1]) - deep_vpvs(t[2]),
+                                reverse=True):
+            gi, go = deep_vpvs(mi), deep_vpvs(mo)
+            gains.append(gi - go)
+            print(f"{b:16}{gi:12.1f}{go:10.1f}{gi - go:+11.1f}")
+        improved = sum(1 for g in gains if g > 0)
+        print(f"\nillumination improved DEEP vp+vs recovery in "
+              f"{improved}/{len(gains)} combos; "
+              f"mean gain {sum(gains)/len(gains):+.1f} pts dRMS")
+
+    n_fin = sum(1 for m in rows if m.get("losses_finite", False))
+    print(f"\n{len(rows)}/90 runs complete ({n_fin} finite)")
     if rows:
         b = rows[0]
-        print(f"best (vp+vs): {b['tag']}  score={b['_score']:.3f}  "
-              f"vp dRMS {b['_d_vp']:.0f}% / vs dRMS {b['_d_vs']:.0f}% / "
-              f"rho dRMS {b['_d_rho']:.0f}%")
+        print(f"best overall (vp+vs): {b['_base']} [{b['_precond']}]  "
+              f"score={b['_score']:.3f}")
 
     if args.csv:
         import csv
-        cols = ["tag", "_score", "_d_vp", "update_corr_vp", "_d_vs",
-                "update_corr_vs", "_d_rho", "update_corr_rho", "runtime_h",
-                "losses_finite"]
+        cols = ["_base", "_precond", "_score", "_d_vp", "_dd_vp", "_d_vs",
+                "_dd_vs", "_d_rho", "update_corr_vp", "update_corr_vs",
+                "update_corr_rho", "runtime_h", "losses_finite"]
         with open(args.csv, "w", newline="") as fh:
             w = csv.writer(fh)
-            w.writerow(cols)
+            w.writerow([c.lstrip("_") for c in cols])
             for m in rows:
                 w.writerow([m.get(c, "") for c in cols])
         print(f"wrote {args.csv}")

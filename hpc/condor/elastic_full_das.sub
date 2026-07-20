@@ -1,6 +1,8 @@
 # HTCondor submit file: full-Marmousi2 ELASTIC 3-parameter DAS campaign.
-# 45 jobs (9 misfits x 5 optimizers), one GPU each: joint Vp + Vs + density
-# inversion, 180 m Gaussian-smoothed initials. See hpc/condor/README.md.
+# 90 jobs = 9 misfits x 5 optimizers x {illumination precond ON, OFF}, one GPU
+# each: joint Vp + Vs + density, 180 m Gaussian-smoothed initials. The A/B on
+# the illumination (diagonal-Hessian) preconditioner measures its effect on
+# DEEP recovery. See hpc/condor/README.md.
 #
 # From the DASFWI repo root on OrangeGrid:
 #   mkdir -p output logs                                       # condor needs them

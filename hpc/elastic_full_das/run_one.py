@@ -25,6 +25,7 @@ from common import (OUT_ROOT, OBS_FILE, ITERATIONS, NZ, NX, DX, DZ, WATER_ROWS,
                     pick_device, load_models, build_model, build_acquisition,
                     build_misfit, normalize_traces, apply_misfit,
                     ElasticPropagator)
+from inversion.preconditioner import illumination_weight
 
 import numpy as np
 import torch
@@ -40,13 +41,18 @@ def main():
     ap.add_argument("--optimizer", required=True, choices=sorted(OPTIMIZERS))
     ap.add_argument("--iterations", type=int, default=ITERATIONS)
     ap.add_argument("--device", default=None)
+    ap.add_argument("--precond", choices=["illum", "off"], default="illum",
+                    help="illum = divide the gradient by the source "
+                         "illumination (diagonal-Hessian preconditioner, lifts "
+                         "deep cells); off = baseline (water mask only)")
     ap.add_argument("--smoke", action="store_true",
                     help="2-iteration wiring check")
     args = ap.parse_args()
 
     device = pick_device(args.device)
     iterations = 2 if args.smoke else args.iterations
-    tag = f"{args.misfit}_{args.optimizer}"
+    tag = (f"{args.misfit}_{args.optimizer}_"
+           + ("illum" if args.precond == "illum" else "noillum"))
     if args.smoke:
         tag = "smoke_" + tag
     out_dir = OUT_ROOT / tag
@@ -83,6 +89,7 @@ def main():
     for it in range(iterations):
         optimizer.zero_grad()
         loss_iter = 0.0
+        illum = None                                           # source illumination
         for b0 in range(0, n_shots, batch):
             shot_index = np.arange(b0, min(b0 + batch, n_shots))
             rec = prop.forward(model=model, shot_index=shot_index,
@@ -95,9 +102,19 @@ def main():
             loss = apply_misfit(misfit, syn, o)
             loss.backward()
             loss_iter += float(loss)
+            if args.precond == "illum":                        # accumulate diag(H)
+                fw = (rec["forward_wavefield_vx"]
+                      + rec["forward_wavefield_vz"]).detach()
+                illum = fw if illum is None else illum + fw
         with torch.no_grad():
+            # diagonal-Hessian (illumination) preconditioner weight, shared
+            # across vp/vs/rho (ADFWI applies one source illumination to all).
+            weight = (illumination_weight(illum) if args.precond == "illum"
+                      and illum is not None else None)
             for par in (model.vp, model.vs, model.rho):
                 par.grad *= grad_mask                          # Liu's mask
+                if weight is not None:                         # lift deep cells
+                    par.grad *= weight
                 if args.optimizer == "sgd":                    # norm_grad
                     peak = par.grad.abs().max().clamp_min(1e-30)
                     par.grad *= float(par.detach().max()) / peak
@@ -126,12 +143,15 @@ def main():
     rho_final = model.rho.detach().cpu().numpy()
 
     metrics = dict(tag=tag, device=device, iterations=iterations,
-                   runtime_h=round(hours, 3),
+                   misfit=args.misfit, optimizer=args.optimizer,
+                   precond=args.precond, runtime_h=round(hours, 3),
                    loss_first=float(losses[0]), loss_last=float(losses[-1]),
                    losses_finite=bool(np.isfinite(losses).all()))
     triplet = (("vp", vp_true, vp_init, vp_final),
                ("vs", vs_true, vs_init, vs_final),
                ("rho", rho_true, rho_init, rho_final))
+    deep = slice(NZ // 2, NZ)          # deep HALF of the section (below ~mid-z):
+    #                                    where illumination preconditioning acts
     for nm, tru, ini, fin in triplet:
         dt_, di = tru - ini, fin - ini
         denom = np.sqrt((dt_ ** 2).sum() * (di ** 2).sum())
@@ -139,6 +159,11 @@ def main():
         metrics[f"rms_final_{nm}"] = float(np.sqrt(((fin - tru) ** 2).mean()))
         metrics[f"update_corr_{nm}"] = (float((dt_ * di).sum() / denom)
                                         if denom else 0.0)
+        # deep-region recovery (the point of the illumination A/B)
+        metrics[f"rms_init_deep_{nm}"] = float(
+            np.sqrt(((ini[deep] - tru[deep]) ** 2).mean()))
+        metrics[f"rms_final_deep_{nm}"] = float(
+            np.sqrt(((fin[deep] - tru[deep]) ** 2).mean()))
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
     print(json.dumps(metrics, indent=2), flush=True)
 

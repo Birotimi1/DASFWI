@@ -135,11 +135,13 @@ condor_submit hpc/condor/run.sub -a 'kind=acoustic' -a 'extra=--conventional'
 # the full 45-combo ACOUSTIC campaign (9 misfits x 5 optimizers, one GPU each):
 condor_submit hpc/condor/marmousi_full_das.sub
 
-# the full 45-combo ELASTIC campaign (joint Vp + Vs + density, 180 m smoothed
-# initials). Generate its OWN shared obs first, then the 45 jobs:
+# the full ELASTIC campaign: 90 jobs = 9 misfits x 5 optimizers x illumination
+# preconditioner {ON, OFF} (A/B), joint Vp + Vs + density, 180 m smoothed
+# initials. Generate its OWN shared obs first, then the 90 jobs:
 condor_submit hpc/condor/run.sub -a 'kind=genobs_elastic'   # ONCE, wait for it
-condor_submit hpc/condor/elastic_full_das.sub               # 45 jobs
-# rank:  python hpc/elastic_full_das/rank_campaign.py       # by vp+vs recovery
+condor_submit hpc/condor/elastic_full_das.sub               # 90 jobs
+# rank + illumination A/B on deep recovery:
+#   python hpc/elastic_full_das/rank_campaign.py
 
 # a single elastic run; FORGE field (source-independent misfit, data-driven start):
 condor_submit hpc/condor/run.sub -a 'kind=elastic' -a 'misfit=gc' -a 'optimizer=adam'
