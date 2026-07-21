@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Rank the elastic Vp/Vs DAS campaign by SSIM + MAPE, with the illumination A/B.
+"""Rank the elastic Vp/Vs DAS campaign under TWO metric families, separately, so
+their behaviour can be compared:
 
-Following Liu's paper, model recovery is scored with (per parameter):
-    SSIM  - structural similarity to the true model (Wang 2004); higher better,
-            1 = identical.  <-- primary ranking metric
-    MAPE  - mean absolute percentage error (Hyndman & Koehler 2006); lower better.
-Both are computed HERE from the saved setup.npz (vp_true/vs_true) and each
-combo's iter_vp.npz / iter_vs.npz (recovered = last cached iteration), so a
-running campaign is scored without any re-run. The combined ranking uses the
-mean SSIM of (vp, vs); the DEEP-half SSIM drives the illumination A/B.
+  STRUCTURAL  ranked by SSIM (Wang 2004; higher=better, 1=identical), with MAPE
+              (Hyndman & Koehler 2006; % error, lower=better) shown alongside.
+  AMPLITUDE   ranked by dRMS% (RMS error removed; higher=better), with the
+              update-correlation shown alongside.
+
+SSIM/MAPE are computed here from setup.npz (vp_true/vs_true) + each combo's
+iter_vp.npz / iter_vs.npz; RMS/dRMS/update-corr come from metrics.json. A running
+or finished campaign is scored with no re-run. The illumination A/B is reported
+under BOTH families (deep SSIM and deep dRMS).
 
     python hpc/elastic_full_das/rank_campaign.py
     python hpc/elastic_full_das/rank_campaign.py --csv ranking.csv
@@ -37,6 +39,12 @@ def _final(results, tag, param):
     return np.asarray(a[-1] if a.ndim == 3 else a, dtype=float)
 
 
+def _drms(m, p, deep=False):
+    k = "rms_%s_deep_%s" if deep else "rms_%s_%s"
+    ri, rf = m.get(k % ("init", p), 0.0), m.get(k % ("final", p), 0.0)
+    return 100.0 * (ri - rf) / ri if ri > 0 else 0.0
+
+
 def _load(results):
     setup_f = os.path.join(results, "setup.npz")
     if not os.path.isfile(setup_f):
@@ -45,8 +53,7 @@ def _load(results):
     s = np.load(setup_f)
     truth = {"vp": np.asarray(s["vp_true"], float),
              "vs": np.asarray(s["vs_true"], float)}
-    nz = truth["vp"].shape[0]
-    deep = slice(nz // 2, nz)
+    deep = slice(truth["vp"].shape[0] // 2, truth["vp"].shape[0])
 
     rows = []
     for mf in sorted(glob.glob(os.path.join(results, "*", "metrics.json"))):
@@ -63,20 +70,39 @@ def _load(results):
                 ok = False
                 break
             sc = model_scores(truth[p], inv, deep=deep)
-            m[f"ssim_{p}"] = sc["ssim"]
-            m[f"mape_{p}"] = sc["mape"]
+            m[f"ssim_{p}"], m[f"mape_{p}"] = sc["ssim"], sc["mape"]
             m[f"ssim_deep_{p}"] = sc["ssim_deep"]
+            m[f"drms_{p}"], m[f"drms_deep_{p}"] = _drms(m, p), _drms(m, p, deep=True)
         if not ok:
             continue
-        m["_base"] = f"{m.get('misfit','?')}_{m.get('optimizer','?')}"
-        m["_precond"] = m.get("precond") or ("illum" if tag.endswith("_illum")
-                                             else "off")
         finite = m.get("losses_finite", True)
+        m["_base"] = f"{m.get('misfit','?')}_{m.get('optimizer','?')}"
+        m["_precond"] = m.get("precond") or ("illum" if tag.endswith("_illum") else "off")
         m["_ssim"] = 0.5 * (m["ssim_vp"] + m["ssim_vs"]) if finite else -1.0
         m["_ssim_deep"] = 0.5 * (m["ssim_deep_vp"] + m["ssim_deep_vs"])
-        m["_mape"] = 0.5 * (m["mape_vp"] + m["mape_vs"])
+        m["_drms"] = 0.5 * (m["drms_vp"] + m["drms_vs"]) if finite else -1e9
+        m["_drms_deep"] = 0.5 * (m["drms_deep_vp"] + m["drms_deep_vs"])
         rows.append(m)
     return rows
+
+
+def _ab(rows, key, label, fmt="{:+.3f}"):
+    by_base = {}
+    for m in rows:
+        by_base.setdefault(m["_base"], {})[m["_precond"]] = m
+    pairs = [(b, d["illum"], d["off"]) for b, d in by_base.items()
+             if "illum" in d and "off" in d]
+    print(f"\n=== illumination A/B -- {label} ({len(pairs)} paired combos) ===")
+    if not pairs:
+        return
+    gains = []
+    for b, mi, mo in sorted(pairs, key=lambda t: t[1][key] - t[2][key], reverse=True):
+        g = mi[key] - mo[key]
+        gains.append(g)
+        print(f"  {b:16} illum {mi[key]:8.3f}  off {mo[key]:8.3f}  gain {fmt.format(g)}")
+    imp = sum(1 for g in gains if g > 0)
+    print(f"  -> illumination helped in {imp}/{len(gains)} combos; "
+          f"mean gain {fmt.format(sum(gains)/len(gains))}")
 
 
 def main():
@@ -90,57 +116,57 @@ def main():
         print(f"no completed combos with iter_vp/vs.npz under {args.results}",
               file=sys.stderr)
         sys.exit(1)
-    rows.sort(key=lambda m: m["_ssim"], reverse=True)
+    nfin = sum(1 for m in rows if m.get("losses_finite", True))
+    print(f"==================== elastic Vp/Vs campaign -- dual ranking "
+          f"({len(rows)}/90 scored, {nfin} finite) ====================")
 
-    hdr = (f"{'#':>2} {'combo':16}{'prec':>6} | "
-           f"{'SSIM vp':>8}{'vs':>7}{'deep':>7} | "
-           f"{'MAPE% vp':>9}{'vs':>7} |{'h':>5} ok")
-    print(hdr)
-    print("-" * len(hdr))
+    # ---- STRUCTURAL: by SSIM ------------------------------------------------
+    rows.sort(key=lambda m: m["_ssim"], reverse=True)
+    print("\n########## STRUCTURAL -- ranked by SSIM (higher=better); MAPE% lower=better")
+    h = (f"{'#':>2} {'combo':16}{'prec':>6} | {'SSIM vp':>8}{'vs':>7}{'deep':>7}"
+         f" | {'MAPE% vp':>9}{'vs':>7} |{'h':>5} ok")
+    print(h); print("-" * len(h))
     for i, m in enumerate(rows, 1):
         ok = "OK" if m.get("losses_finite", True) else "NAN"
         print(f"{i:2d} {m['_base']:16}{m['_precond']:>6} | "
               f"{m['ssim_vp']:8.3f}{m['ssim_vs']:7.3f}{m['_ssim_deep']:7.3f} | "
-              f"{m['mape_vp']:9.2f}{m['mape_vs']:7.2f} |"
-              f"{m.get('runtime_h', 0):5.2f} {ok}")
-
-    # --- illumination A/B on DEEP structural similarity (vp+vs) ---------------
-    by_base = {}
-    for m in rows:
-        by_base.setdefault(m["_base"], {})[m["_precond"]] = m
-    pairs = [(b, d["illum"], d["off"]) for b, d in by_base.items()
-             if "illum" in d and "off" in d]
-    print(f"\n=== illumination A/B on DEEP SSIM (vp+vs) "
-          f"({len(pairs)} paired combos) ===")
-    if pairs:
-        gains = []
-        print(f"{'combo':16}{'deep illum':>12}{'deep off':>10}{'gain':>9}")
-        for b, mi, mo in sorted(pairs, key=lambda t: t[1]["_ssim_deep"] - t[2]["_ssim_deep"],
-                                reverse=True):
-            gi, go = mi["_ssim_deep"], mo["_ssim_deep"]
-            gains.append(gi - go)
-            print(f"{b:16}{gi:12.3f}{go:10.3f}{gi - go:+9.3f}")
-        improved = sum(1 for g in gains if g > 0)
-        print(f"\nillumination improved DEEP SSIM in {improved}/{len(gains)} "
-              f"combos; mean gain {sum(gains)/len(gains):+.3f}")
-
-    nfin = sum(1 for m in rows if m.get("losses_finite", True))
-    print(f"\n{len(rows)}/90 runs scored ({nfin} finite)")
+              f"{m['mape_vp']:9.2f}{m['mape_vs']:7.2f} |{m.get('runtime_h',0):5.2f} {ok}")
     b = rows[0]
-    print(f"best (mean SSIM): {b['_base']} [{b['_precond']}]  "
-          f"SSIM vp {b['ssim_vp']:.3f} / vs {b['ssim_vs']:.3f}  |  "
-          f"MAPE vp {b['mape_vp']:.2f}% / vs {b['mape_vs']:.2f}%")
+    print(f"best (SSIM): {b['_base']} [{b['_precond']}]  "
+          f"SSIM {b['_ssim']:.3f}  MAPE vp {b['mape_vp']:.2f}% / vs {b['mape_vs']:.2f}%")
+
+    # ---- AMPLITUDE: by dRMS -------------------------------------------------
+    rows.sort(key=lambda m: m["_drms"], reverse=True)
+    print("\n########## AMPLITUDE -- ranked by dRMS% (RMS removed; higher=better)")
+    h = (f"{'#':>2} {'combo':16}{'prec':>6} | {'vp dRMS%':>9}{'deep':>6}"
+         f" | {'vs dRMS%':>9}{'deep':>6} | {'corr vp':>8}{'vs':>6} |{'h':>5} ok")
+    print(h); print("-" * len(h))
+    for i, m in enumerate(rows, 1):
+        ok = "OK" if m.get("losses_finite", True) else "NAN"
+        print(f"{i:2d} {m['_base']:16}{m['_precond']:>6} | "
+              f"{m['drms_vp']:9.1f}{m['drms_deep_vp']:6.0f} | "
+              f"{m['drms_vs']:9.1f}{m['drms_deep_vs']:6.0f} | "
+              f"{m.get('update_corr_vp',0):8.2f}{m.get('update_corr_vs',0):6.2f} |"
+              f"{m.get('runtime_h',0):5.2f} {ok}")
+    b = rows[0]
+    print(f"best (dRMS): {b['_base']} [{b['_precond']}]  "
+          f"vp {b['drms_vp']:.1f}% / vs {b['drms_vs']:.1f}%")
+
+    # ---- illumination A/B under BOTH families -------------------------------
+    _ab(rows, "_ssim_deep", "deep SSIM (structure)", "{:+.3f}")
+    _ab(rows, "_drms_deep", "deep dRMS% (amplitude)", "{:+.1f}")
 
     if args.csv:
         import csv
         cols = ["_base", "_precond", "ssim_vp", "ssim_vs", "_ssim_deep",
-                "mape_vp", "mape_vs", "runtime_h", "losses_finite"]
+                "mape_vp", "mape_vs", "drms_vp", "drms_vs", "_drms_deep",
+                "update_corr_vp", "update_corr_vs", "runtime_h", "losses_finite"]
         with open(args.csv, "w", newline="") as fh:
             w = csv.writer(fh)
             w.writerow([c.lstrip("_") for c in cols])
             for m in rows:
                 w.writerow([m.get(c, "") for c in cols])
-        print(f"wrote {args.csv}")
+        print(f"\nwrote {args.csv}")
 
 
 if __name__ == "__main__":
