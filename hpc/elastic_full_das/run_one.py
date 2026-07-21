@@ -26,6 +26,7 @@ from common import (OUT_ROOT, OBS_FILE, ITERATIONS, NZ, NX, DX, DZ, WATER_ROWS,
                     build_misfit, normalize_traces, apply_misfit,
                     ElasticPropagator)
 from inversion.preconditioner import illumination_weight
+from inversion.metrics import model_scores            # SSIM + MAPE (Liu's metrics)
 
 import numpy as np
 import torch
@@ -158,6 +159,12 @@ def main():
             np.sqrt(((ini[deep] - tru[deep]) ** 2).mean()))
         metrics[f"rms_final_deep_{nm}"] = float(
             np.sqrt(((fin[deep] - tru[deep]) ** 2).mean()))
+        # Liu's metrics: SSIM (structural, higher better) + MAPE (% err, lower)
+        sc = model_scores(tru, fin, deep=deep)
+        metrics[f"ssim_{nm}"] = sc["ssim"]
+        metrics[f"mape_{nm}"] = sc["mape"]
+        metrics[f"ssim_deep_{nm}"] = sc["ssim_deep"]
+        metrics[f"mape_deep_{nm}"] = sc["mape_deep"]
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
     print(json.dumps(metrics, indent=2), flush=True)
 

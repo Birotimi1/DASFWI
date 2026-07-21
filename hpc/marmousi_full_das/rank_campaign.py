@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
-"""Rank the full-Marmousi2 DAS campaign by recovery quality.
+"""Rank the full-Marmousi2 DAS campaign by SSIM + MAPE (Liu's metrics).
 
-Reads every results/marmousi_full_das/<misfit>_<optimizer>/metrics.json and
-prints a table sorted by a composite deployment score:
+Following Liu's paper, model recovery is scored with:
+    SSIM  - structural similarity of inverted vs true Vp (Wang 2004); higher
+            better, 1 = identical.  <-- primary ranking metric
+    MAPE  - mean absolute percentage error (Hyndman & Koehler 2006); lower better.
+Both are computed HERE from setup.npz (vp_true) + each combo's iter_vp.npz
+(recovered = last cached iteration), so a completed OR running campaign is
+scored without re-running. dRMS%/update-corr are still shown for continuity.
 
-    score = update_corr * max(0, 1 - rms_final / rms_init)
-
-i.e. reward BOTH structural alignment with the true update (update_corr) AND
-the fraction of velocity RMS error removed. A diverged/non-finite run scores 0.
-
-Usage (from the DASFWI repo root, no args needed):
     python hpc/marmousi_full_das/rank_campaign.py
-    python hpc/marmousi_full_das/rank_campaign.py --results /path/to/results_dir
-    python hpc/marmousi_full_das/rank_campaign.py --csv ranking.csv
+    python hpc/marmousi_full_das/rank_campaign.py --results /path --csv ranking.csv
 """
 import argparse
 import glob
@@ -20,26 +18,33 @@ import json
 import os
 import sys
 
-# default results dir mirrors common.OUT_ROOT (DASFWI_RESULTS or repo/results/...)
+import numpy as np
+
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _REPO)
+from inversion.metrics import model_scores                       # noqa: E402
+
 _DEFAULT = os.environ.get(
     "DASFWI_RESULTS", os.path.join(_REPO, "results", "marmousi_full_das"))
 
 
-def score(m):
-    if not m.get("losses_finite", False):
-        return 0.0
-    ri, rf = m.get("rms_init", 0.0), m.get("rms_final", 0.0)
-    frac = max(0.0, 1.0 - rf / ri) if ri > 0 else 0.0
-    return m.get("update_corr", 0.0) * frac
+def _final_vp(results, tag):
+    f = os.path.join(results, tag, "iter_vp.npz")
+    if not os.path.isfile(f):
+        return None
+    a = np.load(f)["data"]
+    return np.asarray(a[-1] if a.ndim == 3 else a, dtype=float)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--results", default=_DEFAULT,
-                    help="campaign results dir (default: $DASFWI_RESULTS or repo/results/marmousi_full_das)")
-    ap.add_argument("--csv", default=None, help="also write the table to this CSV")
+    ap.add_argument("--results", default=_DEFAULT)
+    ap.add_argument("--csv", default=None)
     args = ap.parse_args()
+
+    setup_f = os.path.join(args.results, "setup.npz")
+    vp_true = (np.asarray(np.load(setup_f)["vp_true"], float)
+               if os.path.isfile(setup_f) else None)
 
     files = sorted(glob.glob(os.path.join(args.results, "*", "metrics.json")))
     if not files:
@@ -53,35 +58,47 @@ def main():
         except Exception as e:                       # noqa: BLE001
             print(f"  skip {f}: {e}", file=sys.stderr)
             continue
-        m["_score"] = score(m)
+        tag = m.get("tag") or os.path.basename(os.path.dirname(f))
+        # prefer SSIM/MAPE from metrics.json; else compute from arrays
+        if "ssim" in m and "mape" in m:
+            pass
+        elif vp_true is not None:
+            vp = _final_vp(args.results, tag)
+            if vp is None:
+                continue
+            sc = model_scores(vp_true, vp)
+            m["ssim"], m["mape"] = sc["ssim"], sc["mape"]
+        else:
+            continue
         m["_drms"] = (100.0 * (m["rms_init"] - m["rms_final"]) / m["rms_init"]
                       if m.get("rms_init", 0) > 0 else 0.0)
+        m["_ssim"] = m["ssim"] if m.get("losses_finite", True) else -1.0
         rows.append(m)
-    rows.sort(key=lambda m: m["_score"], reverse=True)
+    rows.sort(key=lambda m: m["_ssim"], reverse=True)
 
-    hdr = f"{'#':>2} {'combo':20}{'rms_init':>9}{'rms_final':>10}{'dRMS%':>7}{'upd_corr':>9}{'score':>7}{'h':>6}  ok"
+    hdr = (f"{'#':>2} {'combo':20}{'SSIM':>7}{'MAPE%':>8}{'dRMS%':>7}"
+           f"{'upd_corr':>9}{'h':>6}  ok")
     print(hdr)
     print("-" * len(hdr))
     for i, m in enumerate(rows, 1):
-        ok = "OK" if m.get("losses_finite", False) else "NAN"
-        print(f"{i:2d} {m['tag']:20}{m['rms_init']:9.1f}{m['rms_final']:10.1f}"
-              f"{m['_drms']:7.1f}{m.get('update_corr', 0):9.3f}{m['_score']:7.3f}"
-              f"{m.get('runtime_h', 0):6.2f}  {ok}")
+        ok = "OK" if m.get("losses_finite", True) else "NAN"
+        print(f"{i:2d} {m['tag']:20}{m['ssim']:7.3f}{m['mape']:8.2f}{m['_drms']:7.1f}"
+              f"{m.get('update_corr', 0):9.3f}{m.get('runtime_h', 0):6.2f}  {ok}")
 
-    nfin = sum(1 for m in rows if m.get("losses_finite", False))
-    print(f"\n{len(rows)}/45 complete  ({nfin} finite)")
+    nfin = sum(1 for m in rows if m.get("losses_finite", True))
+    print(f"\n{len(rows)}/45 scored  ({nfin} finite)")
     if rows:
-        best = rows[0]
-        print(f"best: {best['tag']}  score={best['_score']:.3f}  "
-              f"dRMS={best['_drms']:.1f}%  update_corr={best.get('update_corr', 0):.3f}")
+        b = rows[0]
+        print(f"best (SSIM): {b['tag']}  SSIM={b['ssim']:.3f}  "
+              f"MAPE={b['mape']:.2f}%  dRMS={b['_drms']:.1f}%")
 
     if args.csv:
         import csv
-        cols = ["tag", "rms_init", "rms_final", "_drms", "update_corr",
-                "_score", "runtime_h", "losses_finite"]
+        cols = ["tag", "ssim", "mape", "_drms", "update_corr", "rms_init",
+                "rms_final", "runtime_h", "losses_finite"]
         with open(args.csv, "w", newline="") as fh:
             w = csv.writer(fh)
-            w.writerow(cols)
+            w.writerow([c.lstrip("_") for c in cols])
             for m in rows:
                 w.writerow([m.get(c, "") for c in cols])
         print(f"wrote {args.csv}")

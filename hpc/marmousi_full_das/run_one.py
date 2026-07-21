@@ -113,11 +113,14 @@ def main():
     d_true = vp_true - vp_init
     d_inv = vp_final - vp_init
     denom = np.sqrt((d_true ** 2).sum() * (d_inv ** 2).sum())
+    from inversion.metrics import model_scores       # SSIM + MAPE (Liu's metrics)
+    sc = model_scores(vp_true, vp_final)
     metrics = dict(
         tag=tag, device=device, iterations=iterations, runtime_h=round(hours, 3),
         rms_init=float(np.sqrt(((vp_init - vp_true) ** 2).mean())),
         rms_final=float(np.sqrt(((vp_final - vp_true) ** 2).mean())),
         update_corr=float((d_true * d_inv).sum() / denom) if denom > 0 else 0.0,
+        ssim=sc["ssim"], mape=sc["mape"],
         loss_first=float(iter_loss[0]), loss_last=float(iter_loss[-1]),
         losses_finite=bool(np.isfinite(iter_loss).all()),
     )
