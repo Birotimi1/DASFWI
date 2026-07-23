@@ -119,14 +119,30 @@ DAS strain rate
    with a known analytic skip fraction.
 4. **Band-filter utility** — verify/​wrap `fwi/multiScaleProcessing.py`; zero-phase
    low/high-pass applied IDENTICALLY to syn and obs. Unit test on spectra.
-5. **Induce skipping** (await user's exact setup; default recommendation): two axes
-   — (a) starting-model ladder via `inversion/run_starting_model_ladder.py`,
-   σ ∈ {4,8,16,32 nodes} + a 1-D linear v(z) rung; (b) low-frequency deprivation,
-   high-pass obs at f_hp ∈ {2,4} Hz. Grid: misfits {l2, gc, envelope, sinkhorn,
-   sdtw, traveltime, convsi} × **adam** × rungs (NIM excluded — known divergent;
-   sgd only if probing the illumination interplay). Acoustic Marmousi (cheap,
-   known truth). ~50 mostly-cheap jobs, NOT another 90-job burn.
-6. Dual-rank per rung → the **flip curve** (SSIM vs rung, per misfit) + skip-fraction traces.
+5. **Induce skipping — FULL grid (user decision, 2026-07-23).** Do NOT pre-trim:
+   run the complete **45-combo grid (9 misfits × 5 optimizers, INCLUDING nim** —
+   its behaviour *under skipping* is a data point, not a reason to omit), same
+   completeness as the 90-job campaign, scored with the full **dual ranking
+   (SSIM/MAPE + RMS/dRMS)**. Rationale: the optimizer×misfit ordering can reorder
+   under skipping, so assuming the no-skip winners (adam) transfer would defeat the
+   test's purpose.
+   - **Platform: ACOUSTIC Marmousi (Vp-only).** Cheap enough to afford 45×rungs,
+     and isolates the misfit×skip physics without the Vp/Vs/density/staging
+     confounds. (The flip is a fundamental misfit property; confirm it carries to
+     elastic later, in Phase 4.) The finished acoustic campaign is the no-skip
+     reference rung.
+   - **Primary induction axis: starting-model degradation LADDER** (extend
+     `inversion/run_starting_model_ladder.py` to the full optimizer grid + dual
+     metrics + skip-diagnostic logging). ~4–5 rungs good→bad, e.g. Gaussian
+     σ ∈ {6(≈current/good), 12, 24, 48 nodes} + a data-independent **1-D linear
+     v(z)** worst rung.
+   - **Cost:** 45 × ~4–5 rungs ≈ 180–225 acoustic jobs; the slow misfits
+     (sinkhorn ~8h, sdtw, convsi ~5h) are the burn — the fast ones are ~0.4h.
+     Rung count is the tunable dial if wall-clock is tight (keep all 45 combos).
+   - **Secondary axis (Phase 1b, only if needed):** low-frequency deprivation,
+     high-pass obs at f_hp ∈ {2,4} Hz — stresses a different part of the objective.
+6. Dual-rank **each rung** → the **flip curve** (SSIM AND dRMS vs starting-model
+   rung, per misfit×optimizer) + per-iteration skip-fraction traces.
 - **Acceptance:** L2 SSIM degrades monotonically with rung; the **flip rung**
   (a robust misfit overtakes L2 in SSIM) is identified — or shown absent; the
   logged skip fraction at band start correlates with L2 failure (record the
