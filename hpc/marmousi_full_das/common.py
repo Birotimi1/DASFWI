@@ -131,16 +131,51 @@ def build_regularization(name, device, dtype):
     return config.build_regularization(name, NX, NZ, DX, DZ, device, dtype)
 
 
-def load_models():
-    """True and smooth-initial vp on Liu's standard section."""
+# --------------------------------------------------------------------------- #
+# starting-model ladder (Phase 1: cycle-skipping flip test)
+# --------------------------------------------------------------------------- #
+#: Progressively worse starting models. "s<K>" = get_smooth_marmousi_model with
+#: gaussian_kernel=K (K nodes * 40 m = the smoothing window), "const" = a single
+#: mean velocity below the water layer.
+#:
+#: s6 is the DEFAULT and reproduces the finished 45-combo campaign exactly, so it
+#: is rung 0 of the ladder for free. The rungs are concentrated in sigma 12..24
+#: because that is where the half-period skip threshold is crossed: a vertical
+#: traveltime analysis puts |dt| at ~16 ms (s6), ~43 (s12), ~65 (s16), ~112 (s24)
+#: against a T/2 of ~80 ms, i.e. the transition is SHARP between s16 and s24 and
+#: everything at s32+ is saturated (100% skipped) - which is why no s32/s48 rung
+#: is included. Verify on the real model with calibrate_rungs.py before
+#: committing the full grid.
+START_RUNGS = ("s6", "s12", "s16", "s20", "s24", "const")
+DEFAULT_RUNG = "s6"
+
+
+def load_models(rung=DEFAULT_RUNG):
+    """True vp and the starting vp for `rung` on Liu's standard section.
+
+    All rungs go through get_smooth_marmousi_model, so the water-layer handling
+    (the top rcv_depth+mask_extra_detph = 12 rows are left at the true values)
+    is IDENTICAL across the ladder and consistent with GRAD_MASK_TOP.
+    """
+    if rung not in START_RUNGS:
+        raise ValueError(f"unknown start rung {rung!r}; choices {START_RUNGS}")
     marmousi = load_marmousi_model(in_dir=str(MARMOUSI_DIR))
     x = np.linspace(X0_SECTION, X0_SECTION + DX * NX, NX)
     z = np.linspace(0, DZ * NZ, NZ)
     true_model = resample_marmousi_model(x, z, marmousi)
-    smooth_model = get_smooth_marmousi_model(true_model, gaussian_kernel=6)
-    vp_true = true_model["vp"].T.copy()
-    vp_init = smooth_model["vp"].T.copy()
-    return np.asarray(vp_true, np.float64), np.asarray(vp_init, np.float64)
+    vp_true = np.asarray(true_model["vp"].T.copy(), np.float64)
+
+    if rung == "const":
+        # keep the water layer at truth (as the smoothers do), flat mean below
+        smooth_model = get_smooth_marmousi_model(true_model, gaussian_kernel=6)
+        vp_init = np.asarray(smooth_model["vp"].T.copy(), np.float64)
+        top = GRAD_MASK_TOP + 2                      # = the smoother's untouched band
+        vp_init[top:] = vp_true[top:].mean()
+    else:
+        kernel = int(rung[1:])
+        smooth_model = get_smooth_marmousi_model(true_model, gaussian_kernel=kernel)
+        vp_init = np.asarray(smooth_model["vp"].T.copy(), np.float64)
+    return vp_true, vp_init
 
 
 def build_model(vp, vp_bound, vp_grad, device, dtype=torch.float32):

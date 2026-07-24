@@ -78,7 +78,7 @@ DAS strain rate
 | D2 | **Vs seed = Vp/√3** (physics prior), NOT Castagna; refine via S kinematics inside the first elastic stage | √3 = universal isotropic default; Castagna is a clastic-basin fit → not transferable. Explicit up-front S-tomography is redundant with the convex low-freq elastic stage |
 | D3 | **Sequential Vp-lead, Vs-follow with overlap** | suppresses the Vp–Vs cross-talk that made the joint 3-parameter run diverge; overlap stops Vp absorbing S kinematics |
 | D4 | **Adaptive misfit λ(f, stage): L2 → Sinkhorn**, continuous ramp | L2 for resolution where safe, OT for robustness where skipping; continuous keeps the objective/gradient smooth |
-| D5 | **Blend = normalized + short-circuited**: (1−λ)·E_L2/s_L2 + λ·E_OT/s_OT, s_i = detached EMA; never evaluate the zero-weighted term | L2 and OT differ ~orders of magnitude; naive sum makes λ meaningless. Sinkhorn ~20× L2 cost → short-circuit at λ∈{0,1} |
+| D5 | **Blend = GRADIENT-NORM-normalized + short-circuited**: (1−λ)·E_L2/s_L2 + λ·E_OT/s_OT with **s_i = detached EMA of ‖∂E_i/∂m‖** (NOT of the loss value) | **Measured on real strain-rate-scale data (2.3e-8):** L2 value 5.6e-7 / ‖g‖ 0.49; sinkhorn 1.3e-4 / 1.3e3; gc **−5.2e-2** / 2.5e5. Value ratio (sinkhorn/L2) = 233 but GRADIENT ratio = 2686 — they differ **11.5×**, so value-normalization does not equalize influence on the update; and **gc is negative**, which breaks value-normalization outright. Get per-term grads via `torch.autograd.grad(..., retain_graph=True)` (forward graph shared; refresh the EMA every K iters to amortize). Sinkhorn ~20× L2 cost → short-circuit at λ∈{0,1} |
 | D6 | **λ driver:** frequency-scheduled first; **diagnostic-primed** upgrade later | schedule is simple/deterministic; diagnostic preserves L2 resolution when a good start keeps you aligned at high f (§1.1) |
 | D7 | **Density held constant** (2450) unless a dedicated multi-param study | joint ρ diverged and dragged Vp/Vs (finding #5); revisit only with parameter-scaling |
 | D8 | **All rankings dual** — SSIM/MAPE (structure) + RMS/dRMS (amplitude), separate tables | they disagree (l2_nadam vs l2_adam); Liu's metrics (SSIM Wang 2004, MAPE Hyndman & Koehler 2006) |
@@ -113,36 +113,71 @@ DAS strain rate
 - **Acceptance:** both CSVs archived; findings memory updated.
 
 ### Phase 1 — Cycle-skip flip test  ← THE HYPOTHESIS GATE (start here after Phase 0)
-3. **`inversion/skip_diagnostic.py`** — per-trace windowed cross-correlation lag
-   between syn and obs; `skip_fraction = mean(|lag| > 1/(2·f_max))`. Torch,
-   batched, detached, cheap; log every iteration. Unit test: shifted-Ricker traces
-   with a known analytic skip fraction.
-4. **Band-filter utility** — verify/​wrap `fwi/multiScaleProcessing.py`; zero-phase
-   low/high-pass applied IDENTICALLY to syn and obs. Unit test on spectra.
-5. **Induce skipping — FULL grid (user decision, 2026-07-23).** Do NOT pre-trim:
-   run the complete **45-combo grid (9 misfits × 5 optimizers, INCLUDING nim** —
-   its behaviour *under skipping* is a data point, not a reason to omit), same
-   completeness as the 90-job campaign, scored with the full **dual ranking
-   (SSIM/MAPE + RMS/dRMS)**. Rationale: the optimizer×misfit ordering can reorder
-   under skipping, so assuming the no-skip winners (adam) transfer would defeat the
-   test's purpose.
-   - **Platform: ACOUSTIC Marmousi (Vp-only).** Cheap enough to afford 45×rungs,
-     and isolates the misfit×skip physics without the Vp/Vs/density/staging
-     confounds. (The flip is a fundamental misfit property; confirm it carries to
-     elastic later, in Phase 4.) The finished acoustic campaign is the no-skip
-     reference rung.
-   - **Primary induction axis: starting-model degradation LADDER** (extend
-     `inversion/run_starting_model_ladder.py` to the full optimizer grid + dual
-     metrics + skip-diagnostic logging). ~4–5 rungs good→bad, e.g. Gaussian
-     σ ∈ {6(≈current/good), 12, 24, 48 nodes} + a data-independent **1-D linear
-     v(z)** worst rung.
-   - **Cost:** 45 × ~4–5 rungs ≈ 180–225 acoustic jobs; the slow misfits
-     (sinkhorn ~8h, sdtw, convsi ~5h) are the burn — the fast ones are ~0.4h.
-     Rung count is the tunable dial if wall-clock is tight (keep all 45 combos).
-   - **Secondary axis (Phase 1b, only if needed):** low-frequency deprivation,
-     high-pass obs at f_hp ∈ {2,4} Hz — stresses a different part of the objective.
-6. Dual-rank **each rung** → the **flip curve** (SSIM AND dRMS vs starting-model
-   rung, per misfit×optimizer) + per-iteration skip-fraction traces.
+
+> **IMPLEMENTED 2026-07-24.** Three corrections were found while verifying this
+> phase against the code; they are folded in below and were the reason not to
+> implement it as originally specified.
+>
+> **C1 — build on the CAMPAIGN infrastructure, not `run_starting_model_ladder.py`.**
+> That file is a *different experiment*: a 201x301 @ 5 m crop, f0 = 10 Hz, 4 shots,
+> 1 fiber, hardcoded `sgd/lr=0.004`, via `run_inverse_crime`. Our campaign is
+> 88x200 @ 40 m, 40 shots, 4 fibers, f0 = 5 Hz. Using it would make rung 0
+> incomparable to the baseline. Instead `hpc/marmousi_full_das/run_one.py` gained
+> `--start-rung`, so **rung s6 IS the finished 45-combo campaign (free)** and every
+> rung **reuses the same `obs_data_das.npz`** (observed data depends only on
+> `vp_true`) — nothing to regenerate.
+>
+> **C2 — the rung ladder must concentrate on sigma 12..24; sigma >= 32 is wasted.**
+> Vertical-traveltime analysis on a Marmousi-like proxy vs the T/2 threshold:
+> s6 ~16 ms (0% skipped) | s12 ~43 ms (0%) | s16 ~65 ms (**4%**) | s24 ~112 ms
+> (**96%**) | s32 ~153 ms (100%) | s48 ~206 ms (100%). The transition is SHARP
+> between s16 and s24, so the original {6,12,24,48} would have spent three rungs in
+> the same saturated regime with no sampling inside the transition. Also
+> counterintuitive: **1-D linear v(z) is NOT the worst rung** kinematically (~47 ms,
+> 0% skipped) — it preserves the average v(z). *Ordering by RMS != ordering by skip
+> risk.*
+>
+> **C3 — the skip threshold is ~80 ms, not 100 ms.** The source is an INTEGRATED
+> Ricker: measured f_peak = 3.54 Hz (not 5), f90 = 6.25 Hz -> T/2 = 80 ms. Use the
+> band's f90 (`skip_diagnostic.ricker_f90`), never the nominal f0.
+
+3. **`inversion/skip_diagnostic.py`** ✅ — FFT cross-correlation per-trace lag on
+   (n_shots, nt, n_chan); `skip_fraction = frac(|lag| > 1/(2·f_max))`; dead-trace
+   guard (DAS blind channels); returns lag stats + peak correlation. Positive lag =
+   synthetic arrives LATE. Torch, batched, detached. `tests/test_skip_diagnostic.py`
+   (6 tests: known shifts, threshold, dead traces, amplitude invariance, f90).
+   Also wired into `run_one.py`: `skip_init` / `skip_final` land in `metrics.json`.
+4. **Band-filter utility** — for the OPTIONAL Phase-1b low-frequency-deprivation
+   axis. NOTE `fwi/multiScaleProcessing.py` provides **`lowpass` only — there is no
+   highpass**, so that axis needs a new filter (not free, as previously assumed).
+   Deferred until 1a/1 results say whether it is needed.
+5. **Phase 1a — RUNG CALIBRATION FIRST** ✅ `hpc/marmousi_full_das/calibrate_rungs.py`.
+   One **forward only** (no inversion) per candidate rung against the shared obs →
+   skip fraction per rung, ~1–2 min each. Pick the rungs it labels **TRANSITION**
+   (5%–85% skipped); rungs at 0% or 100% teach nothing and cost 45 jobs each.
+   Submit: `condor_submit hpc/condor/run.sub -a 'kind=calibrate'`.
+6. **Phase 1 — FULL grid on the calibrated rungs (user decision, 2026-07-23).**
+   Do NOT pre-trim: the complete **45-combo grid (9 misfits × 5 optimizers,
+   INCLUDING nim** — its behaviour *under skipping* is a data point), scored with
+   the full **dual ranking (SSIM/MAPE + RMS/dRMS)**. Rationale: the
+   optimizer×misfit ordering can reorder under skipping, so assuming the no-skip
+   winners (adam) transfer would defeat the test's purpose.
+   - **Platform: ACOUSTIC Marmousi (Vp-only)** — affordable at 45×rungs and it
+     isolates the misfit×skip physics from Vp/Vs/density/staging confounds. (The
+     flip is a fundamental misfit property; confirm it carries to elastic in
+     Phase 4.) The finished campaign is rung s6, the no-skip reference.
+   - **Rungs:** `START_RUNGS = s6, s12, s16, s20, s24, const` (s6 free). Generate
+     the job list with `make_ladder_combos.sh s16 s20 s24 ...` (refuses s6).
+   - **Cost:** 45 × n_rungs. 3 calibrated rungs ≈ 135 jobs; the slow misfits
+     (sinkhorn ~8 h, sdtw/convsi ~5 h) dominate. **Rung count is the dial** if
+     wall-clock is tight — keep all 45 combos.
+   - Submit: `condor_submit hpc/condor/skip_ladder.sub`.
+   - **Optional Phase 1b (only if 1a/1 demand it):** low-frequency deprivation —
+     needs a highpass that `multiScaleProcessing` does not provide (see step 4).
+7. **`flip_curve.py`** ✅ — per-rung leaderboards in BOTH metric families, the
+   misfit×rung SSIM curve, and an explicit **VERDICT**: the flip rung, or
+   "NO FLIP → stop and redesign". Verdict logic verified on fabricated flip and
+   no-flip scenarios. `--csv`, `--plot`.
 - **Acceptance:** L2 SSIM degrades monotonically with rung; the **flip rung**
   (a robust misfit overtakes L2 in SSIM) is identified — or shown absent; the
   logged skip fraction at band start correlates with L2 failure (record the
@@ -151,11 +186,13 @@ DAS strain rate
 
 ### Phase 2 — Adaptive λ objective (only after a confirmed flip)
 7. **`inversion/adaptive_misfit.py`** — `BlendedMisfit(loss_lo, loss_hi, lam)`:
-   normalized short-circuited blend (D5); schedule
+   **gradient-norm**-normalized, short-circuited blend (D5 — do NOT normalize by
+   loss value; verified 11.5× discrepancy and gc is sign-indefinite); schedule
    `λ_b = clip((ln f_b − ln f_lo)/(ln f_hi − ln f_lo), 0, 1)` with (f_lo,f_hi) from
    the Phase-1 flip point; **per-stage override table** (√3 amendment). Register as
    `adaptive` in `config.py`. Unit tests: λ=0/1 reduce EXACTLY to the pure misfits;
-   finite gradient at λ=0.5 on strain-rate-scale (~1e-8) data.
+   finite gradient at λ=0.5 on strain-rate-scale (~1e-8) data; and the two terms'
+   post-normalization gradient norms match to within a small tolerance.
 8. **`inversion/run_adaptive.py`** (acoustic first) — configurable bands
    (e.g. 2.5→5→7.5→full Hz), per-band iteration budget, symmetric filtering,
    skip-fraction logged.
@@ -193,10 +230,32 @@ DAS strain rate
 
 ## 5. Immediate next action
 
-**When 90/90 elastic finishes:** Phase 0 close-out, then **Phase 1** — build
-`skip_diagnostic.py` + the band filter, induce skipping on acoustic Marmousi, and
-produce the **flip curve**. That single result decides whether Phases 2–5 proceed
-as written or the objective design is reconsidered.
+**Phase 1 is BUILT and tested (2026-07-24)** — it runs on OrangeGrid today and is
+scheduler-agnostic apart from the two `.sub` files, so the pending new cluster
+only needs a wrapper swap.
+
+Run order once the 90-job elastic campaign frees the queue:
+
+```bash
+cd ~/DASFWI && git pull
+mkdir -p output logs
+
+# 1a. CALIBRATE which rungs actually bracket the skip threshold (~1-2 min/rung)
+condor_submit hpc/condor/run.sub -a 'kind=calibrate'
+cat output/run_calibrate_*.out            # note the rungs marked TRANSITION
+
+# 1.  full 45-combo grid on those rungs (s6 is already done - do not re-run)
+./hpc/marmousi_full_das/make_ladder_combos.sh s16 s20 s24    # <- calibrated rungs
+condor_submit hpc/condor/skip_ladder.sub
+condor_q $USER
+
+# 1.  the verdict
+python hpc/marmousi_full_das/flip_curve.py --csv flip.csv --plot flip.png
+```
+
+`flip_curve.py` prints an explicit **FLIP AT RUNG '<r>'** or **NO FLIP** verdict.
+That single result decides whether Phases 2–5 proceed as written or the objective
+design is reconsidered — **build nothing downstream until it exists.**
 
 > The discipline that matters most: Phase 1 is a hypothesis test about strain-rate
 > objectives (NIM's divergence is the standing reminder that OT-family behavior on

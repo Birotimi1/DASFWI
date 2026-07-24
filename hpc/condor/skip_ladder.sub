@@ -1,0 +1,39 @@
+# HTCondor submit file: PHASE 1 cycle-skipping flip test (acoustic Marmousi).
+# The full 45-combo grid (9 misfits x 5 optimizers) repeated across the
+# starting-model ladder rungs listed in combos_ladder.txt — one GPU per job.
+#
+# Rung s6 is NOT in the ladder file: it is the already-finished baseline
+# campaign (results/marmousi_full_das/<combo>/) and serves as rung 0 for free.
+# All rungs reuse the SAME obs_data_das.npz (the observed data depends only on
+# the true model), so there is nothing to regenerate.
+#
+# From the DASFWI repo root on OrangeGrid:
+#   mkdir -p output logs
+#   # 1. FIRST calibrate which rungs actually bracket the skip threshold:
+#   condor_submit hpc/condor/run.sub -a 'kind=calibrate'
+#   cat output/run_calibrate_*.out          # pick the TRANSITION rungs
+#   # 2. write those rungs into combos_ladder.txt (make_ladder_combos.sh), then:
+#   condor_submit hpc/condor/skip_ladder.sub
+#   condor_q $USER
+#   # 3. analyse:  python hpc/marmousi_full_das/flip_curve.py
+
+executable      = hpc/condor/run_combo_ladder.sh
+arguments       = $(combo)
+initialdir      = .
+
++request_gpus   = 1
+Requirements    = (CUDADriverVersion >= 12.0) && (CUDACapability >= 8.0)
+
+request_cpus    = 8
+request_memory  = 24GB
+request_disk    = 12GB
+
+log             = logs/ladder_$(Cluster).log
+output          = output/ladder_$(Cluster).$(Process).out
+error           = output/ladder_$(Cluster).$(Process).err
+
+should_transfer_files = IF_NEEDED
+when_to_transfer_output = ON_EXIT
+
+# each line of combos_ladder.txt is "<misfit> <optimizer> <rung>"
+queue combo from hpc/marmousi_full_das/combos_ladder.txt
