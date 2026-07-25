@@ -184,7 +184,23 @@ DAS strain rate
   EMPIRICAL threshold; do not assume one). **If no flip → STOP, redesign, build
   nothing further.**
 
-### Phase 2 — Adaptive λ objective (only after a confirmed flip)
+### Phase 2 — Adaptive λ objective  ✅ BUILT 2026-07-24 (validation still gated on Phase 1)
+
+> The MACHINERY is parameterized, so it is built and unit-tested now; what Phase 1
+> supplies is the NUMBERS (`--flip-lo/--flip-hi`) and the acceptance verdict. The
+> defaults in the code are placeholders, **not physics**.
+>
+> - `inversion/adaptive_misfit.py` — `BlendedMisfit` (adjoint-source
+>   gradient-norm normalisation, EMA scales, short-circuit at λ∈{0,1}, NIM-safe
+>   via `apply_misfit`), `LambdaSchedule` (log-linear f-ramp + per-stage
+>   overrides), `DiagnosticLambda` (**Phase 5**, skip-fraction-driven with
+>   hysteresis), `stage_plan` (the 2-D band × stage resolver).
+> - `hpc/marmousi_full_das/run_adaptive.py` — acoustic multiscale driver with the
+>   three arms (`--objective adaptive|l2|sinkhorn`) for the acceptance test.
+> - `tests/test_adaptive_misfit.py` — 14 tests, incl. the central claim that
+>   normalisation gives each term a unit-norm adjoint source, the guard test that
+>   the raw terms differ by >100×, endpoint direction-equivalence, and that the
+>   expensive OT term is never evaluated at λ=0.
 7. **`inversion/adaptive_misfit.py`** — `BlendedMisfit(loss_lo, loss_hi, lam)`:
    **gradient-norm**-normalized, short-circuited blend (D5 — do NOT normalize by
    loss value; verified 11.5× discrepancy and gc is sign-indefinite); schedule
@@ -200,7 +216,17 @@ DAS strain rate
 - **Acceptance:** adaptive ≥ best fixed arm in final SSIM (tol ~0.01) AND
   final-band MAPE at L2-grade AND not worse than L2 anywhere below the flip band.
 
-### Phase 3 — Route B starting model (transferable initial)
+### Phase 3 — Route B starting model  ✅ BUILT 2026-07-24
+
+> - `inversion/starting_model.py` — `linear_vz` (data-independent 1-D start),
+>   `vs_from_vp` (√3 Poisson-solid prior + optional depth-graded ratio for
+>   cover/basement), `poisson_clamp`, `smooth_model`. 7 tests, incl. that √3
+>   implies ν = 0.25 exactly and that the depth-graded seed switches at the
+>   configured contact depth.
+> - `hpc/marmousi_full_das/run_traveltime_starter.py` — 1-D linear start →
+>   cross-correlation traveltime at the lowest band with Tikhonov-2 smoothness →
+>   `starter/vp_start.npz` (+ Vs seed). Prints the skip fraction of BOTH the 1-D
+>   start and the delivered starter, which is the acceptance number.
 10. **`inversion/run_traveltime_starter.py`** — from a data-independent 1-D linear
     v(z); traveltime misfit at the lowest band; heavy smoothness (GradProcessor
     smoothing + Tikhonov-2); ~50–100 iters → `vp_start`.
@@ -211,7 +237,14 @@ DAS strain rate
     table (cover vs basement); Vs-release stage forced λ=1 initially (§1.4).
     Document the cover-skip caveat in the docstring.
 
-### Phase 4 — Integration
+### Phase 4 — Integration  ✅ BUILT 2026-07-24
+
+> `hpc/elastic_full_das/run_pipeline.py` — the whole proposal end to end:
+> `--start linear|route_b|smooth` → multiscale cascade → λ(f, stage) blend →
+> 2-D staging (band 1 Vp-only; Vs released at `--vs-release-band` with λ forced
+> to `--vs-lambda-start` then annealed) → Poisson clamp, water mask, optional
+> illumination precond. `--fixed <misfit>` gives the control arms. Density stays
+> constant. Schedule resolved by the unit-tested `stage_plan`.
 13. Elastic adaptive driver, 2-D schedule (band × parameter stage): band 1 Vp-only;
     Vs released band 2+ with λ_vs annealing; Poisson clamp retained; illumination
     precond per Phase-0 (on for sgd, off for adam-family).
@@ -228,34 +261,52 @@ DAS strain rate
 
 ---
 
-## 5. Immediate next action
+## 5. Running the pipeline (all phases BUILT 2026-07-24)
 
-**Phase 1 is BUILT and tested (2026-07-24)** — it runs on OrangeGrid today and is
-scheduler-agnostic apart from the two `.sub` files, so the pending new cluster
-only needs a wrapper swap.
+Everything is implemented and unit-tested (**105 tests pass**). The science code
+is scheduler-agnostic; only the `.sub` files are OrangeGrid-specific, so the
+pending new cluster needs a wrapper swap, nothing more.
 
-Run order once the 90-job elastic campaign frees the queue:
+**The Phase-1 gate still governs interpretation:** run it FIRST, because it
+supplies the λ schedule's (f_lo, f_hi) and decides whether the adaptive objective
+is justified at all. The Phase-2..4 code will *run* regardless — but with
+placeholder frequencies, and a NO-FLIP verdict would mean the adaptive arm has
+nothing to beat.
 
 ```bash
-cd ~/DASFWI && git pull
-mkdir -p output logs
+cd ~/DASFWI && git pull && mkdir -p output logs
 
-# 1a. CALIBRATE which rungs actually bracket the skip threshold (~1-2 min/rung)
-condor_submit hpc/condor/run.sub -a 'kind=calibrate'
-cat output/run_calibrate_*.out            # note the rungs marked TRANSITION
-
-# 1.  full 45-combo grid on those rungs (s6 is already done - do not re-run)
-./hpc/marmousi_full_das/make_ladder_combos.sh s16 s20 s24    # <- calibrated rungs
-condor_submit hpc/condor/skip_ladder.sub
-condor_q $USER
-
-# 1.  the verdict
+# ---- PHASE 1: the hypothesis gate -------------------------------------------
+condor_submit hpc/condor/run.sub -a 'kind=calibrate'      # 1a, ~1-2 min/rung
+cat output/run_calibrate_*.out                            # -> TRANSITION rungs
+./hpc/marmousi_full_das/make_ladder_combos.sh s16 s20 s24 # use those rungs
+condor_submit hpc/condor/skip_ladder.sub                  # 45 combos x rungs
 python hpc/marmousi_full_das/flip_curve.py --csv flip.csv --plot flip.png
+#   -> FLIP AT RUNG 'sNN'  (read f_lo/f_hi from it)   or   NO FLIP -> redesign
+
+# ---- PHASE 2: does the adaptive objective beat both fixed arms? --------------
+FL=3.0; FH=8.0        # <-- set from the flip curve
+for OBJ in adaptive l2 sinkhorn; do
+  condor_submit hpc/condor/run.sub -a 'kind=adaptive' \
+    -a "extra=--objective $OBJ --start-rung s20 --iters 60 --flip-lo $FL --flip-hi $FH"
+done
+# compare results/marmousi_full_das/adaptive/*/metrics.json (ssim, mape)
+
+# ---- PHASE 3: the transferable starting model --------------------------------
+condor_submit hpc/condor/run.sub -a 'kind=starter' -a 'extra=--iters 80 --band 3.0'
+cat output/run_starter_*.out     # skip@1-D vs skip@starter, vs the Phase-1 threshold
+
+# ---- PHASE 4: the full pipeline (and its controls) ---------------------------
+condor_submit hpc/condor/run.sub -a 'kind=pipeline' \
+  -a "extra=--start route_b --bands 2.0,3.0,4.5,full --iters 50 --flip-lo $FL --flip-hi $FH"
+condor_submit hpc/condor/run.sub -a 'kind=pipeline' \
+  -a 'extra=--start linear --fixed l2 --bands 2.0,3.0,4.5,full --iters 50'   # control
 ```
 
-`flip_curve.py` prints an explicit **FLIP AT RUNG '<r>'** or **NO FLIP** verdict.
-That single result decides whether Phases 2–5 proceed as written or the objective
-design is reconsidered — **build nothing downstream until it exists.**
+Smoke any stage first with `--smoke` (2 iterations/band), e.g.
+`-a 'extra=--smoke'`. Phase 5 (`DiagnosticLambda`, hysteresis) is implemented and
+tested; enable it only if the Phase-2 logs show the frequency schedule invoking
+OT when the skip diagnostic says the model is well aligned.
 
 > The discipline that matters most: Phase 1 is a hypothesis test about strain-rate
 > objectives (NIM's divergence is the standing reminder that OT-family behavior on

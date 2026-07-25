@@ -13,12 +13,16 @@ case "$KIND" in
     genobs)         SCRIPT=hpc/marmousi_full_das/generate_obs.py; USE_MO=0 ;;
     genobs_elastic) SCRIPT=hpc/elastic_full_das/generate_obs.py;  USE_MO=0 ;;
     calibrate)      SCRIPT=hpc/marmousi_full_das/calibrate_rungs.py; USE_MO=0 ;;
+    # --- the adaptive-FWI pipeline (Phases 2-4) ---
+    adaptive) SCRIPT=hpc/marmousi_full_das/run_adaptive.py;           USE_MO=0 ;;
+    starter)  SCRIPT=hpc/marmousi_full_das/run_traveltime_starter.py; USE_MO=0 ;;
+    pipeline) SCRIPT=hpc/elastic_full_das/run_pipeline.py;            USE_MO=0 ;;
     acoustic) SCRIPT=hpc/standalone/run_acoustic_das.py; USE_MO=1 ;;
     elastic)  SCRIPT=hpc/standalone/run_elastic_das.py;  USE_MO=1 ;;
     field)    SCRIPT=hpc/standalone/run_field_das.py;    USE_MO=1 ;;
     ladder)   SCRIPT=inversion/run_starting_model_ladder.py; USE_MO=0 ;;
     matrix)   SCRIPT=inversion/run_technique_matrix.py;      USE_MO=0 ;;
-    *) echo "kind must be genobs|genobs_elastic|calibrate|acoustic|elastic|field|ladder|matrix, got: $KIND" >&2; exit 2 ;;
+    *) echo "kind must be genobs|genobs_elastic|calibrate|adaptive|starter|pipeline|acoustic|elastic|field|ladder|matrix, got: $KIND" >&2; exit 2 ;;
 esac
 
 source "$(dirname "$0")/activate_env.sh"

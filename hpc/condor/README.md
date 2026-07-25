@@ -148,6 +148,23 @@ condor_submit hpc/condor/run.sub -a 'kind=elastic' -a 'misfit=gc' -a 'optimizer=
 condor_submit hpc/condor/run.sub -a 'kind=field' -a 'misfit=convsi' \
     -a 'extra=--well 78A-32 --shots 318 --starting traveltime --dz 5 --dt 4e-4 --nt 6000'
 
+# --- the adaptive-FWI research pipeline (see ADAPTIVE_FWI_PLAN.md for the
+# full run order, the phase gates, and what each acceptance test is) ---
+# PHASE 1 cycle-skip flip test (the hypothesis gate - run this FIRST):
+condor_submit hpc/condor/run.sub -a 'kind=calibrate'        # 1a: pick the rungs
+./hpc/marmousi_full_das/make_ladder_combos.sh s16 s20 s24
+condor_submit hpc/condor/skip_ladder.sub                    # 45 combos x rungs
+python hpc/marmousi_full_das/flip_curve.py                  # FLIP / NO-FLIP verdict
+# PHASE 2 adaptive L2->OT objective (three arms: adaptive / l2 / sinkhorn):
+condor_submit hpc/condor/run.sub -a 'kind=adaptive' \
+    -a 'extra=--objective adaptive --start-rung s20 --flip-lo 3 --flip-hi 8'
+# PHASE 3 Route B transferable starting model (no picking, no logs):
+condor_submit hpc/condor/run.sub -a 'kind=starter' -a 'extra=--iters 80 --band 3.0'
+# PHASE 4 full elastic pipeline (Route B start -> adaptive Vp/Vs):
+condor_submit hpc/condor/run.sub -a 'kind=pipeline' \
+    -a 'extra=--start route_b --bands 2.0,3.0,4.5,full --iters 50'
+# add --smoke to any of the above for a 2-iteration wiring check.
+
 # technique-matrix search / degradation ladder:
 condor_submit hpc/condor/run.sub -a 'kind=matrix'
 condor_submit hpc/condor/run.sub -a 'kind=ladder' -a 'extra=--misfits gc,sinkhorn'
