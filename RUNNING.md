@@ -1,4 +1,4 @@
-# How to run DASFWI locally (without Claude)
+# How to run DASFWI locally 
 
 Everything below runs on this Mac from the repo root:
 
