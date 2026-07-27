@@ -1,9 +1,13 @@
 # Running DASFWI on Syracuse OrangeGrid (HTCondor + GPU)
 
 **OrangeGrid is HTCondor** — you submit with `condor_submit` and monitor with
-`condor_q $USER` (there is no `sbatch`). This `hpc/condor/` path is the only
-scheduler path in the repo. It is self-contained: a fresh reader (or AI model)
-can follow it end-to-end.
+`condor_q $USER` (there is no `sbatch`). It is self-contained: a fresh reader (or
+AI model) can follow it end-to-end.
+
+> **PSC Bridges-2 (SLURM + H100)?** See `hpc/slurm/README.md`. That path reuses
+> the scheduler-agnostic wrappers here (`run_standalone.sh`, `run_combo*.sh`) and
+> only swaps the scheduler layer + env activation — so this file stays the source
+> of truth for the job "kinds" and combos.
 
 The submit files and wrappers here follow Syracuse Research Computing's own
 OrangeGrid examples (`git clone http://github.com/SyracuseUniversity/OrangeGridExamples`,

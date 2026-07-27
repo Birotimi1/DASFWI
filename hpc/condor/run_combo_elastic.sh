@@ -18,7 +18,7 @@ fi
 : "${OPTIMIZER:?run_combo_elastic.sh: could not parse optimizer from: $*}"
 PRECOND="${PRECOND:-illum}"
 
-source "$(dirname "$0")/activate_env.sh"
+source "${DASFWI_ACTIVATE:-$(dirname "$0")/activate_env.sh}"
 
 echo "host=$(hostname) misfit=${MISFIT} optimizer=${OPTIMIZER} precond=${PRECOND} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 exec "$PYTHON_BIN" hpc/elastic_full_das/run_one.py \

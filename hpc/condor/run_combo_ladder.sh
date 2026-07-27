@@ -16,7 +16,7 @@ else
 fi
 : "${RUNG:?run_combo_ladder.sh: could not parse rung from: $*}"
 
-source "$(dirname "$0")/activate_env.sh"
+source "${DASFWI_ACTIVATE:-$(dirname "$0")/activate_env.sh}"
 
 echo "host=$(hostname) misfit=${MISFIT} optimizer=${OPTIMIZER} rung=${RUNG} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 exec "$PYTHON_BIN" hpc/marmousi_full_das/run_one.py \

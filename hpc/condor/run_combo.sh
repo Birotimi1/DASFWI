@@ -16,8 +16,9 @@ else
 fi
 : "${OPTIMIZER:?run_combo.sh: could not parse optimizer from: $*}"
 
-# activate the conda env (edit hpc/condor/activate_env.sh once for your account)
-source "$(dirname "$0")/activate_env.sh"
+# activate the conda env (edit hpc/condor/activate_env.sh once for your account).
+# DASFWI_ACTIVATE overrides it (hpc/slurm uses this on Bridges-2).
+source "${DASFWI_ACTIVATE:-$(dirname "$0")/activate_env.sh}"
 
 # initialdir in the .sub is the DASFWI repo root, so relative paths work.
 # ADFWI_ROOT / MARMOUSI_DIR / DASFWI_RESULTS may be exported via the .sub

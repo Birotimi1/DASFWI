@@ -25,7 +25,9 @@ case "$KIND" in
     *) echo "kind must be genobs|genobs_elastic|calibrate|adaptive|starter|pipeline|acoustic|elastic|field|ladder|matrix, got: $KIND" >&2; exit 2 ;;
 esac
 
-source "$(dirname "$0")/activate_env.sh"
+# DASFWI_ACTIVATE lets another scheduler (e.g. hpc/slurm on Bridges-2) inject its
+# own env activation; unset -> the OrangeGrid activate_env.sh next to this file.
+source "${DASFWI_ACTIVATE:-$(dirname "$0")/activate_env.sh}"
 
 echo "host=$(hostname) kind=$KIND script=$SCRIPT CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 # ${EXTRA[@]+...} guards the empty-array-under-set-u case in bash 3.2

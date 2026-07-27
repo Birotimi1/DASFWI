@@ -264,8 +264,16 @@ DAS strain rate
 ## 5. Running the pipeline (all phases BUILT 2026-07-24)
 
 Everything is implemented and unit-tested (**105 tests pass**). The science code
-is scheduler-agnostic; only the `.sub` files are OrangeGrid-specific, so the
-pending new cluster needs a wrapper swap, nothing more.
+is scheduler-agnostic; the scheduler layer is thin and now exists for **both**
+clusters:
+- **OrangeGrid (HTCondor):** `hpc/condor/` — see its `README.md`.
+- **PSC Bridges-2 (SLURM + H100):** `hpc/slurm/` — see its `README.md`. Same job
+  "kinds" and combos, reusing the condor wrappers via `DASFWI_ACTIVATE`. Budget:
+  allocation `ees260010p`, **1,657 SU ≈ 828 H100-hr** (H100 = 2 SU/hr), so
+  **calibrate one run and throttle the array** before the full sweep.
+
+The commands below are shown for OrangeGrid; the `hpc/slurm/submit.sh` /
+`submit_array.sh` equivalents are one-to-one (mapping in `hpc/slurm/README.md`).
 
 **The Phase-1 gate still governs interpretation:** run it FIRST, because it
 supplies the λ schedule's (f_lo, f_hi) and decides whether the adaptive objective
