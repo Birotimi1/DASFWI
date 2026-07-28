@@ -17,6 +17,7 @@ InversionConfig captures a full technique stack; deployment_score ranks a
 finished run. run_technique_matrix.py sweeps combinations and ranks them.
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
@@ -70,7 +71,15 @@ def build_misfit(name, dt, iterations, use_gc64=False):
     if name == "gc":
         return GCMisfit64(dt=dt) if use_gc64 else Misfit_global_correlation(dt=dt)
     if name == "sdtw":
-        return SdtwSafe(gamma=1, sparse_sampling=2, dt=dt)
+        # sparse_sampling=4 (was 2): pysdtw's numba CUDA kernel launches one
+        # thread per time sample, and on the H100 / CUDA-12.4 / numba stack it hit
+        # CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES at 800 samples (nt=1600 / 2) --
+        # per-block register/shared-mem pressure heavier than on OrangeGrid's older
+        # GPUs. Decimating to 400 (/4) stays well under the launch limit; DTW
+        # alignment is unaffected at this time resolution. Override via env if a
+        # different platform needs it.
+        _sdtw_ss = int(os.environ.get("DASFWI_SDTW_SPARSE", "4"))
+        return SdtwSafe(gamma=1, sparse_sampling=_sdtw_ss, dt=dt)
     if name == "sinkhorn":
         return SinkhornSafe(dt=0.01, sparse_sampling=2, p=1, blur=1e-2)
     if name == "weci":
