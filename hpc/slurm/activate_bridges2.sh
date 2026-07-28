@@ -67,6 +67,19 @@ export PYTHON_BIN
 export MPLBACKEND="${MPLBACKEND:-Agg}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-${LOCAL:-${TMPDIR:-/tmp}}}"
 
+# pysdtw's soft-DTW (the `sdtw` misfit) JIT-compiles a numba CUDA kernel, which
+# needs libNVVM + libdevice from the CUDA *toolkit* -- the torch cu121 pip wheel
+# bundles only the runtime, so numba fails with "libNVVM cannot be found". Point
+# numba at Bridges-2's cuda toolkit via CUDA_HOME (an ENV VAR ONLY: no
+# `module load`, so LD_LIBRARY_PATH is untouched and torch keeps its bundled
+# cu121). numba then dlopens $CUDA_HOME/nvvm/lib64/libnvvm.so. Harmless for the
+# torch-based misfits. Override the toolkit path with DASFWI_CUDA_HOME.
+_cuda_tk="${DASFWI_CUDA_HOME:-/opt/packages/cuda/v12.4.0}"
+if [[ -e "$_cuda_tk/nvvm/lib64/libnvvm.so" ]]; then
+    export CUDA_HOME="$_cuda_tk"
+    export CUDA_PATH="$_cuda_tk"
+fi
+
 # one-line sanity to the job .out: interpreter + which GPU SLURM handed us.
 "$PYTHON_BIN" - <<'PY' || true
 import torch, sys
