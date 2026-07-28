@@ -38,6 +38,8 @@ esac
 WALLTIME="${WALLTIME:-$DEF_T}"
 
 cd "$REPO"; mkdir -p output logs
-echo "submitting: kind=$KIND misfit=$MISFIT opt=$OPT walltime=$WALLTIME extra=[$*]"
-exec sbatch --job-name="dasfwi_${KIND}" --time="$WALLTIME" \
+# forward ITERS explicitly (don't trust the site's --export default)
+SB_EXPORT="ALL"; [[ -n "${ITERS:-}" ]] && SB_EXPORT="ALL,ITERS=$ITERS"
+echo "submitting: kind=$KIND misfit=$MISFIT opt=$OPT walltime=$WALLTIME iters=${ITERS:-default} extra=[$*]"
+exec sbatch --export="$SB_EXPORT" --job-name="dasfwi_${KIND}" --time="$WALLTIME" \
      hpc/slurm/bridges2.sbatch "$KIND" "$MISFIT" "$OPT" "$@"

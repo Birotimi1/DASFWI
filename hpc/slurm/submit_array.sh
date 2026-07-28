@@ -35,8 +35,11 @@ N="$(grep -c '[^[:space:]]' "$COMBOS")"
 LAST=$((N - 1))
 
 mkdir -p output logs
-echo "campaign: $N jobs from $COMBOS via $(basename "$WRAPPER")"
+# forward ITERS explicitly (don't trust the site's --export default; if it were
+# NONE, ITERS would vanish and cells would silently run the 300-iter default).
+SB_EXPORT="ALL"; [[ -n "${ITERS:-}" ]] && SB_EXPORT="ALL,ITERS=$ITERS"
+echo "campaign: $N jobs from $COMBOS via $(basename "$WRAPPER")  iters=${ITERS:-default}"
 echo "  throttle: <=$MAXC concurrent -> burn rate <= $((MAXC * 2)) SU/wall-hour; ${WALLTIME}/job cap"
-exec sbatch --array="0-${LAST}%${MAXC}" --time="$WALLTIME" \
+exec sbatch --export="$SB_EXPORT" --array="0-${LAST}%${MAXC}" --time="$WALLTIME" \
      --job-name="dasfwi_$(basename "$COMBOS" .txt)" \
      hpc/slurm/bridges2_array.sbatch "$COMBOS" "$WRAPPER"
