@@ -18,6 +18,10 @@ fi
 
 source "${DASFWI_ACTIVATE:-$(dirname "$0")/activate_env.sh}"
 
-echo "host=$(hostname) misfit=${MISFIT} optimizer=${OPTIMIZER} rung=${RUNG} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+echo "host=$(hostname) misfit=${MISFIT} optimizer=${OPTIMIZER} rung=${RUNG} iters=${ITERS:-default} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+# ITERS (env) overrides run_one.py's 300 default. run_one saves only AFTER the
+# loop finishes, so on a metered cluster we set ITERS to fit the walltime with
+# margin (a killed cell wastes all its SU); unset -> the 300 default.
 exec "$PYTHON_BIN" hpc/marmousi_full_das/run_one.py \
-     --misfit "$MISFIT" --optimizer "$OPTIMIZER" --start-rung "$RUNG"
+     --misfit "$MISFIT" --optimizer "$OPTIMIZER" --start-rung "$RUNG" \
+     ${ITERS:+--iterations "$ITERS"}

@@ -23,6 +23,8 @@ source "${DASFWI_ACTIVATE:-$(dirname "$0")/activate_env.sh}"
 # initialdir in the .sub is the DASFWI repo root, so relative paths work.
 # ADFWI_ROOT / MARMOUSI_DIR / DASFWI_RESULTS may be exported via the .sub
 # `environment=` line if the side-by-side data layout is not used.
-echo "host=$(hostname) misfit=${MISFIT} optimizer=${OPTIMIZER} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+echo "host=$(hostname) misfit=${MISFIT} optimizer=${OPTIMIZER} iters=${ITERS:-default} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+# ITERS (env) overrides run_one.py's 300 default -- see run_combo_ladder.sh.
 exec "$PYTHON_BIN" hpc/marmousi_full_das/run_one.py \
-     --misfit "$MISFIT" --optimizer "$OPTIMIZER"
+     --misfit "$MISFIT" --optimizer "$OPTIMIZER" \
+     ${ITERS:+--iterations "$ITERS"}
