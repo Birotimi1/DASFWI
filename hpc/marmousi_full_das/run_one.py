@@ -126,11 +126,63 @@ def main():
         print(f"skip@init failed: {type(e).__name__}: {e}", flush=True)
         skip_init = None
 
+    from inversion.metrics import model_scores       # SSIM + MAPE (Liu's metrics)
+
+    def _save(done, hours, skip_final, complete):
+        """Write iter_vp/iter_loss/metrics.json. Called after EVERY chunk so a
+        walltime kill still leaves the latest model + curves, with a metrics.json
+        flagged complete=false and carrying iterations_done."""
+        iter_vp = np.asarray(fwi.iter_vp)
+        iter_loss = np.asarray(fwi.iter_loss)
+        np.savez(out_dir / "iter_vp.npz", data=iter_vp)
+        np.savez(out_dir / "iter_loss.npz", data=iter_loss)
+        vp_final = model.vp.detach().cpu().numpy()
+        d_true = vp_true - vp_init
+        d_inv = vp_final - vp_init
+        denom = np.sqrt((d_true ** 2).sum() * (d_inv ** 2).sum())
+        sc = model_scores(vp_true, vp_final)
+        metrics = dict(
+            tag=tag, device=device, iterations=iterations,
+            iterations_done=int(done), complete=bool(complete),
+            runtime_h=round(hours, 3),
+            misfit=args.misfit, optimizer=args.optimizer,
+            start_rung=args.start_rung,
+            rms_init=float(np.sqrt(((vp_init - vp_true) ** 2).mean())),
+            rms_final=float(np.sqrt(((vp_final - vp_true) ** 2).mean())),
+            update_corr=float((d_true * d_inv).sum() / denom) if denom > 0 else 0.0,
+            ssim=sc["ssim"], mape=sc["mape"],
+            skip_init=(skip_init or {}).get("skip_fraction"),
+            skip_final=(skip_final or {}).get("skip_fraction"),
+            mean_abs_lag_init_s=(skip_init or {}).get("mean_abs_lag_s"),
+            skip_threshold_s=(skip_init or {}).get("threshold_s"),
+            loss_first=float(iter_loss[0]) if len(iter_loss) else None,
+            loss_last=float(iter_loss[-1]) if len(iter_loss) else None,
+            losses_finite=bool(np.isfinite(iter_loss).all()),
+        )
+        with open(out_dir / "metrics.json", "w") as f:
+            json.dump(metrics, f, indent=2)
+        return vp_final, iter_loss, metrics
+
+    # Chunked inversion with periodic checkpointing. run_one otherwise saves only
+    # after the WHOLE loop, so on a metered cluster a walltime kill wastes the
+    # entire cell. forward() accumulates iter_vp/iter_loss and takes start_iter
+    # (optimizer/scheduler persist, scheduler steps once per iter regardless of
+    # start_iter), so chunking gives an IDENTICAL trajectory to one forward() call
+    # -- just with a disk checkpoint after every CKPT_EVERY iterations. A killed
+    # cell then still has its latest model, curves, and metrics.json(complete=false).
+    CKPT_EVERY = 25
     t0 = time.time()
-    fwi.forward(iteration=iterations,
-                batch_size=settings["batch_size"],
-                checkpoint_segments=settings["checkpoint_segments"])
-    hours = (time.time() - t0) / 3600.0
+    hours = 0.0
+    done = 0
+    while done < iterations:
+        n = min(CKPT_EVERY, iterations - done)
+        fwi.forward(iteration=n, start_iter=done,
+                    batch_size=settings["batch_size"],
+                    checkpoint_segments=settings["checkpoint_segments"])
+        done += n
+        hours = (time.time() - t0) / 3600.0
+        _save(done, hours, None, complete=(done >= iterations))
+        print(f"  checkpoint {done}/{iterations} iters ({hours:.2f} h)", flush=True)
 
     try:
         skip_final = _skip()
@@ -139,39 +191,10 @@ def main():
         print(f"skip@final failed: {type(e).__name__}: {e}", flush=True)
         skip_final = None
 
-    # save Liu-style outputs
-    iter_vp = np.asarray(fwi.iter_vp)
-    iter_loss = np.asarray(fwi.iter_loss)
-    np.savez(out_dir / "iter_vp.npz", data=iter_vp)
-    np.savez(out_dir / "iter_loss.npz", data=iter_loss)
-
-    # metrics
-    vp_final = model.vp.detach().cpu().numpy()
-    d_true = vp_true - vp_init
-    d_inv = vp_final - vp_init
-    denom = np.sqrt((d_true ** 2).sum() * (d_inv ** 2).sum())
-    from inversion.metrics import model_scores       # SSIM + MAPE (Liu's metrics)
-    sc = model_scores(vp_true, vp_final)
-    metrics = dict(
-        tag=tag, device=device, iterations=iterations, runtime_h=round(hours, 3),
-        misfit=args.misfit, optimizer=args.optimizer,
-        start_rung=args.start_rung,
-        rms_init=float(np.sqrt(((vp_init - vp_true) ** 2).mean())),
-        rms_final=float(np.sqrt(((vp_final - vp_true) ** 2).mean())),
-        update_corr=float((d_true * d_inv).sum() / denom) if denom > 0 else 0.0,
-        ssim=sc["ssim"], mape=sc["mape"],
-        skip_init=(skip_init or {}).get("skip_fraction"),
-        skip_final=(skip_final or {}).get("skip_fraction"),
-        mean_abs_lag_init_s=(skip_init or {}).get("mean_abs_lag_s"),
-        skip_threshold_s=(skip_init or {}).get("threshold_s"),
-        loss_first=float(iter_loss[0]), loss_last=float(iter_loss[-1]),
-        losses_finite=bool(np.isfinite(iter_loss).all()),
-    )
-    with open(out_dir / "metrics.json", "w") as f:
-        json.dump(metrics, f, indent=2)
+    # definitive save (adds skip@final) + the summary figure
+    vp_final, iter_loss, metrics = _save(iterations, hours, skip_final, complete=True)
     print(json.dumps(metrics, indent=2), flush=True)
 
-    # figure
     fig, axes = plt.subplots(2, 2, figsize=(14, 8), constrained_layout=True)
     ext = [0, (NX - 1) * DX / 1000, (NZ - 1) * DZ / 1000, 0]
     for ax, (d, ttl) in zip(axes.flat[:3], [(vp_true, "true"),
