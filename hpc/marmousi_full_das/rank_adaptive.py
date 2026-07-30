@@ -20,22 +20,25 @@ from pathlib import Path
 MARGIN = 0.02          # SSIM tolerance for "matches" (the confound threshold)
 
 
-def load(d):
+def load(d, partial=False):
     f = d / "metrics.json"
     if not f.is_file():
         return None
     m = json.loads(f.read_text())
-    if not m.get("complete", True):
+    if not m.get("complete", True) and not partial:
         return None
     return m
 
 
-def cells(root):
+def cells(root, partial=False):
+    """Complete cells only by default. `partial=True` also returns checkpointed
+    in-progress cells -- without it a running campaign looks like '0 cells',
+    which hides both progress and misconfigured runs."""
     if not root.is_dir():
         return []
     out = []
     for d in sorted(root.iterdir()):
-        m = load(d) if d.is_dir() else None
+        m = load(d, partial) if d.is_dir() else None
         if m:
             out.append((d.name, m))
     return out
@@ -62,27 +65,36 @@ def main():
     ap.add_argument("--rung", default=None, help="filter acoustic cells by rung")
     ap.add_argument("--elastic", action="store_true")
     ap.add_argument("--results", default=None)
+    ap.add_argument("--partial", action="store_true",
+                    help="also show checkpointed in-progress cells (with "
+                         "iterations_done and a VS-LIVE sanity flag)")
     args = ap.parse_args()
 
     repo = Path(__file__).resolve().parents[2]
     if args.elastic:
         root = Path(args.results) if args.results else \
             repo / "results" / "elastic_full_das" / "pipeline"
-        rows = cells(root)
+        rows = cells(root, args.partial)
         print("=" * 78)
         print(f"ELASTIC PIPELINE -- {len(rows)} complete cells  ({root})")
         print("=" * 78)
         if not rows:
             return print("no complete cells yet")
-        print(f"{'tag':46s} {'SSIM vp':>8s} {'SSIM vs':>8s} {'MAPE vp':>8s}")
+        print(f"{'tag':44s} {'SSIM vp':>8s} {'SSIM vs':>8s} {'iters':>9s}  Vs?")
         for name, m in sorted(rows, key=lambda r: -(r[1].get("ssim_vp") or 0)):
-            print(f"{name:46s} {m.get('ssim_vp', 0):8.3f} "
-                  f"{m.get('ssim_vs', 0):8.3f} {m.get('mape_vp', 0):8.2f}")
+            it = ("DONE" if m.get("complete")
+                  else f"{m.get('iterations_done', 0)}/{m.get('iterations', 0)}")
+            # a run whose Vs never leaves its starting model is Vp-only: the
+            # vs_release_band never fires (e.g. 1 band but release band 2)
+            vs_live = any(b.get("stage") == "vs" for b in (m.get("band_log") or []))
+            flag = "yes" if vs_live else "*** NO -- Vp-only run! ***"
+            print(f"{name:44s} {m.get('ssim_vp', 0):8.3f} "
+                  f"{m.get('ssim_vs', 0):8.3f} {it:>9s}  {flag}")
         return
 
     root = Path(args.results) if args.results else \
         repo / "results" / "marmousi_full_das" / "adaptive"
-    rows = [(n, m) for n, m in cells(root)
+    rows = [(n, m) for n, m in cells(root, args.partial)
             if args.rung is None or m.get("start_rung") == args.rung]
     print("=" * 78)
     print(f"PHASE B -- multiscale arms"
