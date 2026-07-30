@@ -183,6 +183,21 @@ def test_stage_plan_vp_lead_vs_follow():
     assert all(p["f_eff"] <= 6.25 + 1e-9 for p in plan)
 
 
+def test_single_band_with_release_band_2_never_inverts_vs():
+    """REGRESSION: `--bands full` gives ONE band while --vs-release-band defaults
+    to 2, so vs_live (bi >= 2) never fires and an 'elastic' run silently updates
+    Vp ONLY -- at full elastic cost. Two Bridges-2 cells did exactly this.
+    run_pipeline's preflight now refuses this configuration."""
+    from inversion.adaptive_misfit import stage_plan
+    bad = stage_plan([None], None, 3.73, vs_release_band=2)
+    assert not any(p["vs_live"] for p in bad)          # the bug
+    # the fix: two full-band stages = Vp-lead/Vs-follow with no cascade
+    good = stage_plan([None, None], None, 3.73, vs_release_band=2)
+    assert [p["vs_live"] for p in good] == [False, True]
+    # ...as does releasing Vs in the single band
+    assert stage_plan([None], None, 3.73, vs_release_band=1)[0]["vs_live"]
+
+
 def test_stage_plan_acoustic_has_no_vs_stage():
     from inversion.adaptive_misfit import stage_plan
     plan = stage_plan([3.0, 6.0], LambdaSchedule(3.0, 8.0), 6.25,

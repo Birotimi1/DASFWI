@@ -94,6 +94,8 @@ def main():
     ap.add_argument("--dwell", type=int, default=1,
                     help="minimum controller updates per mode (chunks)")
     ap.add_argument("--device", default=None)
+    ap.add_argument("--dry-run", action="store_true", dest="dry_run",
+                    help="validate the plan and exit (no GPU, no data). RUN FIRST.")
     ap.add_argument("--smoke", action="store_true", help="2 chunks of 2 iters")
     args = ap.parse_args()
 
@@ -108,6 +110,26 @@ def main():
     if args.smoke:
         tag = "smoke_" + tag
     out_dir = OUT_ROOT / f"switch_{args.start_rung}" / tag
+    problems = []
+    if not (OUT_ROOT / OBS_FILE).is_file():
+        (print(f"    NOTE: no observed data at {OUT_ROOT / OBS_FILE} "
+               "(fine for --dry-run; run genobs before the real job)")
+         if args.dry_run else
+         problems.append(f"no observed data at {OUT_ROOT / OBS_FILE} (run genobs)"))
+    if chunk > iterations:
+        problems.append(f"--chunk {chunk} > --iterations {iterations}: the "
+                        "controller would never update")
+    if (out_dir / "metrics.json").is_file():
+        print(f"    NOTE: {out_dir} already has results -- this OVERWRITES them",
+              flush=True)
+    for pb in problems:
+        print(f"    *** {pb}", flush=True)
+    if problems:
+        raise SystemExit("preflight FAILED -- nothing was run")
+    if args.dry_run:
+        print(f"    dry-run OK: arm={args.arm} {args.robust}->{args.refiner} "
+              f"rung={args.start_rung} {iterations} iters, chunk {chunk}")
+        return
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"=== PHASE A {tag} [start={args.start_rung}] on {device}, "
           f"{iterations} iters in chunks of {chunk} ===", flush=True)

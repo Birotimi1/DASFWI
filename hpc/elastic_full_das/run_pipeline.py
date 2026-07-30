@@ -100,6 +100,9 @@ def main():
                     help="control arm: use this single misfit at every band")
     ap.add_argument("--device", default=None)
     ap.add_argument("--tag", default=None)
+    ap.add_argument("--dry-run", action="store_true", dest="dry_run",
+                    help="validate the plan (bands, Vs release, data, overwrite) "
+                         "and exit -- no GPU, no data needed. RUN THIS FIRST.")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
 
@@ -115,10 +118,56 @@ def main():
                           else f"fixed_{args.fixed}")
                        + f"_{args.optimizer}" + ("_smoke" if args.smoke else ""))
     out_dir = OUT_ROOT / "pipeline" / tag
-    out_dir.mkdir(parents=True, exist_ok=True)
     print(f"=== ELASTIC PIPELINE {tag} on {device} ===\n"
           f"    bands={bands} x {iters} iters | source f90={f90:.2f} Hz | "
           f"Vs released at band {args.vs_release_band}", flush=True)
+
+    # ---- PREFLIGHT: validate the plan BEFORE spending any GPU time ----------
+    # These checks run on every launch (and alone under --dry-run, which needs
+    # no data and no GPU, so the exact command can be verified locally first).
+    problems, notes = [], []
+    plan_preview = stage_plan(bands, None, f90,
+                              vs_release_band=args.vs_release_band)
+    if not any(p["vs_live"] for p in plan_preview):
+        problems.append(
+            f"Vs IS NEVER INVERTED: {len(bands)} band(s) but --vs-release-band="
+            f"{args.vs_release_band}. This is an ELASTIC run that would only "
+            f"update Vp, at full elastic cost. Use --vs-release-band <= "
+            f"{len(bands)}, or add a stage (e.g. --bands full,full for a "
+            f"single-scale Vp-lead/Vs-follow run).")
+    f_effs = [p["f_eff"] for p in plan_preview]
+    if len(set(f_effs)) != len(f_effs):
+        notes.append(f"duplicate effective bands {f_effs} (cut-offs above the "
+                     f"source f90={f90:.2f} Hz all clamp to it) -- those stages "
+                     "invert identical data")
+    obs_path = OUT_ROOT / OBS_FILE
+    if not obs_path.is_file():
+        if args.dry_run:
+            notes.append(f"no observed data at {obs_path} (fine for --dry-run; "
+                         "run genobs_elastic before the real job)")
+        else:
+            problems.append(f"no observed data at {obs_path} -- run generate_obs "
+                            "(kind=genobs_elastic) first")
+    if args.start == "route_b":
+        f = OUT_ROOT.parent / "marmousi_full_das" / "starter" / "vp_start.npz"
+        if not f.is_file():
+            problems.append(f"--start route_b but no starter at {f}")
+    if out_dir.exists() and (out_dir / "metrics.json").is_file():
+        notes.append(f"{out_dir} already has results -- this run OVERWRITES them")
+    for n in notes:
+        print(f"    NOTE: {n}", flush=True)
+    for p in problems:
+        print(f"    *** {p}", flush=True)
+    print("    plan: " + " | ".join(
+        f"band {p['band']} {'full' if p['cutoff'] is None else str(p['cutoff'])+'Hz'}"
+        f" f_eff={p['f_eff']:.2f} {'Vp+Vs' if p['vs_live'] else 'Vp only'}"
+        f" x{iters}it" for p in plan_preview), flush=True)
+    if problems:
+        raise SystemExit("preflight FAILED (see *** above) -- nothing was run")
+    if args.dry_run:
+        print("    dry-run OK: plan is valid, exiting before any computation")
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- models ------------------------------------------------------------
     vp_true, vs_true, vp_smooth, vs_smooth = load_models()

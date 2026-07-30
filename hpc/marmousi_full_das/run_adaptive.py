@@ -119,6 +119,8 @@ def main():
     ap.add_argument("--regularization", default="none")
     ap.add_argument("--device", default=None)
     ap.add_argument("--tag", default=None)
+    ap.add_argument("--dry-run", action="store_true", dest="dry_run",
+                    help="validate the plan and exit (no GPU, no data). RUN FIRST.")
     ap.add_argument("--smoke", action="store_true", help="2 iters/band")
     args = ap.parse_args()
 
@@ -137,6 +139,28 @@ def main():
                        else f"fixed_{args.objective}")
     tag = f"{tag}_{args.optimizer}_{args.start_rung}" + ("_smoke" if args.smoke else "")
     out_dir = OUT_ROOT / "adaptive" / tag
+    problems = []
+    if not (OUT_ROOT / OBS_FILE).is_file():
+        (print(f"    NOTE: no observed data at {OUT_ROOT / OBS_FILE} "
+               "(fine for --dry-run; run genobs before the real job)")
+         if args.dry_run else
+         problems.append(f"no observed data at {OUT_ROOT / OBS_FILE} (run genobs)"))
+    if (out_dir / "metrics.json").is_file():
+        print(f"    NOTE: {out_dir} already has results -- this OVERWRITES them",
+              flush=True)
+    for pb in problems:
+        print(f"    *** {pb}", flush=True)
+    if problems:
+        raise SystemExit("preflight FAILED -- nothing was run")
+    if args.dry_run:
+        _f90 = ricker_f90(F0, DT, NT, integrated=True)
+        eff = [(_f90 if b is None else min(b, _f90)) for b in bands]
+        if len(set(eff)) != len(eff):
+            print(f"    NOTE: duplicate effective bands {eff} (clamped at "
+                  f"f90={_f90:.2f} Hz) -- those bands invert identical data")
+        print(f"    dry-run OK: objective={args.objective} bands={bands} "
+              f"(f_eff={[round(e,2) for e in eff]}) x {iters} iters")
+        return
     out_dir.mkdir(parents=True, exist_ok=True)
     f90 = ricker_f90(F0, DT, NT, integrated=True)
     print(f"=== {tag} on {device} | bands={bands} x {iters} iters | "
