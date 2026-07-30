@@ -258,6 +258,96 @@ def test_skip_switch_dwell_and_smoothing_block_chatter():
     assert s2.update(float("nan")) == 1.0
 
 
+def test_stage_ladder_advances_and_never_regresses():
+    from inversion.adaptive_misfit import StageLadder
+    L = StageLadder([0.45, 0.20], ema=1.0, dwell=1)     # no smoothing, for clarity
+    assert L.update(0.64) == 0          # robust stage
+    assert L.update(0.50) == 0          # above first threshold: held
+    assert L.update(0.40) == 1          # -> gentle refiner
+    assert L.update(0.30) == 1          # above second threshold: held
+    assert L.update(0.15) == 2          # -> sharp refiner
+    # monotonic: a skip rise can NEVER walk the ladder back
+    assert L.update(0.90) == 2
+    assert len(L.history) == 6
+
+
+def test_stage_ladder_skips_stages_on_an_easy_start():
+    """An already-aligned start must jump straight to the sharp refiner rather
+    than waste iterations in robust mode ('stay out of the way' at s6)."""
+    from inversion.adaptive_misfit import StageLadder
+    assert StageLadder([0.45, 0.20], ema=1.0).update(0.05) == 2
+    # NaN is ignored (stage held)
+    L = StageLadder([0.45, 0.20], ema=1.0)
+    L.update(0.60)
+    assert L.update(float("nan")) == 0
+
+
+def test_stage_ladder_rejects_bad_thresholds():
+    from inversion.adaptive_misfit import StageLadder
+    with pytest.raises(ValueError):
+        StageLadder([0.20, 0.45])                # ascending
+    with pytest.raises(ValueError):
+        StageLadder([])                          # empty
+
+
+def test_staged_misfit_evaluates_only_the_active_stage():
+    from inversion.adaptive_misfit import StagedMisfit
+    calls = {"a": 0, "b": 0, "c": 0}
+
+    def mk(key, scale):
+        class _M(torch.nn.Module):
+            def forward(self, syn, obs):
+                calls[key] += 1
+                return scale * ((syn - obs) ** 2).sum()
+        return _M()
+
+    m = StagedMisfit([mk("a", 1.0), mk("b", 2.0), mk("c", 3.0)],
+                     names=("envelope", "gc", "l2"))
+    syn = torch.randn(2, 8, 3, requires_grad=True)
+    obs = torch.randn(2, 8, 3)
+    assert m.active_name == "envelope"
+    m.forward(syn, obs)
+    assert (calls["a"], calls["b"], calls["c"]) == (1, 0, 0)   # only stage 0
+    m.set_stage(2)
+    assert m.active_name == "l2"
+    m.forward(syn, obs)
+    assert (calls["a"], calls["b"], calls["c"]) == (1, 0, 1)   # only stage 2
+    with pytest.raises(ValueError):
+        m.set_stage(3)
+    with pytest.raises(ValueError):
+        StagedMisfit([mk("a", 1.0)])                           # needs >= 2
+
+
+def test_staged_misfit_normalises_each_stage_to_unit_gradient():
+    """The property that keeps Adam/adagrad moments sane across a hand-over:
+    every stage's adjoint source has ~unit norm despite wildly different raw
+    scales."""
+    from inversion.adaptive_misfit import StagedMisfit
+
+    def mk(scale):
+        class _M(torch.nn.Module):
+            def forward(self, syn, obs):
+                return scale * ((syn - obs) ** 2).sum()
+        return _M()
+
+    m = StagedMisfit([mk(1.0), mk(1e6)], beta=0.0)     # 1e6x raw scale gap
+    obs = torch.randn(2, 8, 3)
+    for stage in (0, 1):
+        m.set_stage(stage)
+        syn = torch.randn(2, 8, 3, requires_grad=True)
+        e = m.forward(syn, obs)
+        g, = torch.autograd.grad(e, syn)
+        assert g.norm().item() == pytest.approx(1.0, rel=0.05)
+
+
+def test_staged_misfit_rejects_stateful_weci():
+    from inversion.adaptive_misfit import StagedMisfit
+    from inversion.config import build_misfit
+    with pytest.raises(ValueError, match="own iteration schedule"):
+        StagedMisfit([build_misfit("l2", dt=0.003, iterations=300),
+                      build_misfit("weci", dt=0.003, iterations=300)])
+
+
 def test_diagnostic_lambda_hysteresis():
     """Measured skipping raises lambda; good alignment lowers it; inside the
     hysteresis band the state is held (no oscillation)."""

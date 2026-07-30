@@ -54,9 +54,12 @@ from ADFWI.fwi import AcousticFWI
 from inversion.metrics import model_scores
 from inversion.skip_diagnostic import skip_fraction, ricker_f90
 from inversion.adaptive_misfit import (BlendedMisfit, SkipSwitch,
-                                       SKIP_ON_ABOVE, SKIP_OFF_BELOW)
+                                       StagedMisfit, StageLadder,
+                                       SKIP_ON_ABOVE, SKIP_OFF_BELOW,
+                                       LADDER_THRESHOLDS)
 
-ARMS = ("switch", "fixedk", "l2", "envelope")
+ARMS = ("switch", "fixedk", "ladder", "l2", "envelope")
+LADDER_STAGES = ("envelope", "gc", "l2")     # robust -> gentle -> sharp refiner
 
 
 def main():
@@ -84,6 +87,10 @@ def main():
                     help="fixedk arm: envelope iterations before the L2 leg")
     ap.add_argument("--on-above", type=float, default=SKIP_ON_ABOVE, dest="on_above")
     ap.add_argument("--off-below", type=float, default=SKIP_OFF_BELOW, dest="off_below")
+    ap.add_argument("--ladder-thresholds", default=None, dest="ladder_thresholds",
+                    help="ladder arm: descending skip thresholds, one per "
+                         f"hand-over (default {','.join(map(str, LADDER_THRESHOLDS))} "
+                         f"for stages {'->'.join(LADDER_STAGES)})")
     ap.add_argument("--dwell", type=int, default=1,
                     help="minimum controller updates per mode (chunks)")
     ap.add_argument("--device", default=None)
@@ -123,12 +130,23 @@ def main():
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100,
                                                 gamma=0.75, last_epoch=-1)
 
-    # both terms must be STATELESS full-gather misfits (batch_size=None,
-    # normalize=True). BlendedMisfit refuses weci, which carries its own
-    # iteration schedule -- see adaptive_misfit._reject_stateful.
-    loss_fn = BlendedMisfit(build_misfit(args.refiner, iterations=iterations),
-                            build_misfit(args.robust, iterations=iterations),
-                            lam=1.0, normalize=True)
+    # All terms must be STATELESS full-gather misfits (batch_size=None,
+    # normalize=True); weci is refused because it carries its own iteration
+    # schedule -- see adaptive_misfit._reject_stateful.
+    if args.arm == "ladder":
+        thr = ([float(t) for t in args.ladder_thresholds.split(",")]
+               if args.ladder_thresholds else list(LADDER_THRESHOLDS))
+        loss_fn = StagedMisfit([build_misfit(m, iterations=iterations)
+                                for m in LADDER_STAGES],
+                               names=LADDER_STAGES, normalize=True)
+        ladder = StageLadder(thr, dwell=args.dwell)
+        print(f"    ladder stages {'->'.join(LADDER_STAGES)} at skip {thr}",
+              flush=True)
+    else:
+        loss_fn = BlendedMisfit(build_misfit(args.refiner, iterations=iterations),
+                                build_misfit(args.robust, iterations=iterations),
+                                lam=1.0, normalize=True)
+        ladder, thr = None, None
     settings = MISFIT_RUN_SETTINGS[args.refiner]   # l2/gc/envelope all match
 
     fwi = AcousticFWI(propagator=prop, model=model, optimizer=optimizer,
@@ -174,12 +192,15 @@ def main():
             start_rung=args.start_rung, chunk=chunk,
             on_above=args.on_above, off_below=args.off_below,
             fixed_k=(args.fixed_k if args.arm == "fixedk" else None),
+            ladder_stages=(list(LADDER_STAGES) if args.arm == "ladder" else None),
+            ladder_thresholds=(thr if args.arm == "ladder" else None),
             ssim=sc["ssim"], mape=sc["mape"],
             rms_init=float(np.sqrt(((vp_init - vp_true) ** 2).mean())),
             rms_final=float(np.sqrt(((vp_final - vp_true) ** 2).mean())),
             trajectory=[dict(iter=i, skip=s, lam=l) for i, s, l in traj],
             handbacks=(ctrl.handbacks if ctrl else None),
             reentries=(ctrl.reentries if ctrl else None),
+            final_stage=(ladder.stage if ladder else None),
         )
         with open(out_dir / "metrics.json", "w") as f:
             json.dump(metrics, f, indent=2)
@@ -191,12 +212,18 @@ def main():
     hours = 0.0
     while done < iterations:
         skip = measure_skip()
-        lam = lam_for(done, skip)
-        loss_fn.set_lambda(lam)
-        traj.append((done, float(skip), float(lam)))
-        mode = args.robust.upper() if lam >= 0.5 else args.refiner.upper()
-        print(f"  iter {done:3d}: skip={skip:.3f} -> lambda={lam:.0f} ({mode})",
-              flush=True)
+        if ladder is not None:                        # N-stage ladder arm
+            level = ladder.update(skip)
+            loss_fn.set_stage(level)
+            mode = loss_fn.active_name.upper()
+            label = f"stage={level}"
+        else:                                         # 2-term blend arms
+            level = lam_for(done, skip)
+            loss_fn.set_lambda(level)
+            mode = args.robust.upper() if level >= 0.5 else args.refiner.upper()
+            label = f"lambda={level:.0f}"
+        traj.append((done, float(skip), float(level)))
+        print(f"  iter {done:3d}: skip={skip:.3f} -> {label} ({mode})", flush=True)
         n = min(chunk, iterations - done)
         fwi.forward(iteration=n, start_iter=done,
                     batch_size=settings["batch_size"],
@@ -206,13 +233,19 @@ def main():
         _save(done, hours, complete=(done >= iterations))
 
     skip_end = measure_skip()
-    traj.append((done, float(skip_end), float(loss_fn.lam)))
+    traj.append((done, float(skip_end),
+                 float(ladder.stage if ladder is not None else loss_fn.lam)))
     vp_final, iter_loss, metrics = _save(done, hours, complete=True)
     print(f"skip@final: {skip_end:.3f}", flush=True)
     if ctrl:
         print(f"controller: handbacks={ctrl.handbacks} reentries={ctrl.reentries}"
               + ("  <-- REENTRIES>0: hand-over criterion suspect"
                  if ctrl.reentries else ""), flush=True)
+    if ladder is not None:
+        print(f"ladder: reached stage {ladder.stage}/{len(LADDER_STAGES) - 1} "
+              f"({loss_fn.active_name})"
+              + ("  <-- never left the robust stage" if ladder.stage == 0 else ""),
+              flush=True)
     print(json.dumps({k: v for k, v in metrics.items() if k != "trajectory"},
                      indent=2), flush=True)
 
@@ -230,10 +263,16 @@ def main():
     it_, sk_, lm_ = zip(*traj)
     ax = axes.flat[3]
     ax.plot(it_, sk_, "b.-", label="skip fraction")
-    ax.axhline(args.on_above, color="r", ls="--", lw=0.8, label="on_above")
-    ax.axhline(args.off_below, color="g", ls="--", lw=0.8, label="off_below")
-    ax.step(it_, lm_, "k-", where="post", alpha=0.6, label="lambda")
-    ax.set(title="controller trajectory", xlabel="iteration", ylim=(-0.05, 1.05))
+    if ladder is not None:
+        for t in thr:
+            ax.axhline(t, color="g", ls="--", lw=0.8)
+        ax.step(it_, lm_, "k-", where="post", alpha=0.6, label="stage")
+    else:
+        ax.axhline(args.on_above, color="r", ls="--", lw=0.8, label="on_above")
+        ax.axhline(args.off_below, color="g", ls="--", lw=0.8, label="off_below")
+        ax.step(it_, lm_, "k-", where="post", alpha=0.6, label="lambda")
+    ax.set(title="controller trajectory", xlabel="iteration",
+           ylim=(-0.05, max(1.0, max(lm_)) + 0.05))
     ax.legend(fontsize=8)
     fig.savefig(out_dir / "final.png", dpi=150)
     print("saved results to", out_dir, flush=True)

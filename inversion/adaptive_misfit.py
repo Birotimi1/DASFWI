@@ -75,6 +75,23 @@ def _reject_stateful(side, fn):
             "externally pinned its weight.")
 
 
+def _grad_scale(value, wrt, ema, key, beta, eps):
+    """Detached ||dE/dsyn||, EMA-smoothed into ema[key]. Falls back to |E| when
+    there is no graph (e.g. unit tests on plain tensors). Shared by
+    BlendedMisfit and StagedMisfit so both normalise identically."""
+    if wrt is None:
+        s = float(value.detach().abs()) if torch.is_tensor(value) else abs(float(value))
+    else:
+        g, = torch.autograd.grad(value, wrt, retain_graph=True,
+                                 create_graph=False, allow_unused=True)
+        s = float(g.detach().norm()) if g is not None else 1.0
+    s = max(s, eps)
+    prev = ema.get(key)
+    s = s if (prev is None or beta <= 0) else beta * prev + (1 - beta) * s
+    ema[key] = s
+    return s
+
+
 # --------------------------------------------------------------------------- #
 # the blended objective
 # --------------------------------------------------------------------------- #
@@ -130,19 +147,7 @@ class BlendedMisfit(Misfit):
         return None
 
     def _scale(self, key, value, wrt):
-        """Detached ||dE/dsyn||, EMA-smoothed. Falls back to |E| when there is
-        no graph (e.g. unit tests on plain tensors)."""
-        if wrt is None:
-            s = float(value.detach().abs()) if torch.is_tensor(value) else abs(float(value))
-        else:
-            g, = torch.autograd.grad(value, wrt, retain_graph=True,
-                                     create_graph=False, allow_unused=True)
-            s = float(g.detach().norm()) if g is not None else 1.0
-        s = max(s, self.eps)
-        prev = self._ema[key]
-        s = s if (prev is None or self.beta <= 0) else self.beta * prev + (1 - self.beta) * s
-        self._ema[key] = s
-        return s
+        return _grad_scale(value, wrt, self._ema, key, self.beta, self.eps)
 
     # -- objective ----------------------------------------------------------
     @staticmethod
@@ -292,6 +297,110 @@ class SkipSwitch:
         self._age += 1
         self.history.append((len(self.history), s, self._state))
         return self._state
+
+
+#: Default 3-stage ladder thresholds (envelope -> gc -> l2), from the gate
+#: mining at s16: envelope drives skip to ~0.368 and gc to ~0.122, so hand over
+#: envelope->gc at the 2-stage off_below (0.45) and gc->l2 at 0.20.
+LADDER_THRESHOLDS = (0.45, 0.20)
+
+
+class StagedMisfit(Misfit):
+    """N-stage hard-switching objective: the >2-term generalisation of
+    BlendedMisfit. Only the ACTIVE stage is ever evaluated (so extra stages are
+    free), and each stage is divided by its OWN EMA adjoint-source norm, which
+    keeps the gradient scale continuous across hand-overs -- the property that
+    stops Adam/adagrad moment states seeing an orders-of-magnitude jump.
+
+    Motivation (measured): weci = envelope->gc staged scores 0.451 at s16 while
+    envelope alone is 0.240 and gc alone 0.210, and our 2-stage envelope->l2
+    switch reaches 0.626. Since staging twice already beats either component,
+    a 3-stage ladder envelope -> gc -> l2 (robust -> gentle refiner -> sharp
+    refiner) is the natural extension. NB the counter-hypothesis is real: l2
+    alone refines better than gc alone, so an intermediate gc stage may simply
+    delay reaching l2 -- which is what the experiment settles.
+    """
+
+    def __init__(self, losses, names=None, beta=0.9, normalize=True, eps=1e-30,
+                 allow_stateful=False):
+        super().__init__()
+        losses = list(losses)
+        if len(losses) < 2:
+            raise ValueError("StagedMisfit needs at least 2 stages")
+        if not allow_stateful:
+            for i, fn in enumerate(losses):
+                _reject_stateful(f"stage{i}", fn)
+        self.losses = losses
+        self.names = ([str(n) for n in names] if names is not None
+                      else [f"stage{i}" for i in range(len(losses))])
+        if len(self.names) != len(losses):
+            raise ValueError("names must match losses")
+        self.beta, self.normalize, self.eps = beta, normalize, eps
+        self._ema = {}
+        self.stage = 0
+
+    def set_stage(self, i):
+        if not (0 <= int(i) < len(self.losses)):
+            raise ValueError(f"stage must be in [0,{len(self.losses) - 1}], got {i}")
+        self.stage = int(i)
+        return self.stage
+
+    @property
+    def active_name(self):
+        return self.names[self.stage]
+
+    @property
+    def scales(self):
+        return dict(self._ema)
+
+    def forward(self, a, b):
+        wrt = BlendedMisfit._graph_arg(a, b)
+        e = BlendedMisfit._eval(self.losses[self.stage], a, b)
+        if not self.normalize:
+            return e
+        return e / _grad_scale(e, wrt, self._ema, self.stage, self.beta, self.eps)
+
+
+class StageLadder:
+    """Monotonic multi-stage controller driven by the measured skip fraction.
+
+    Advances to the next stage when the EMA-smoothed skip falls below that
+    stage's threshold, and NEVER goes back -- being a ladder rather than a
+    switch, the hand-back/oscillation pathology cannot occur by construction
+    (so no ratchet is needed). It may advance SEVERAL stages in one update: an
+    easy start whose skip is already tiny should jump straight to the sharp
+    refiner rather than waste iterations in robust mode ("stay out of the way").
+
+    `thresholds` must be strictly descending, length n_stages - 1.
+    """
+
+    def __init__(self, thresholds=LADDER_THRESHOLDS, ema=0.5, dwell=1):
+        th = [float(t) for t in thresholds]
+        if not th:
+            raise ValueError("need at least one threshold")
+        if any(th[i] <= th[i + 1] for i in range(len(th) - 1)):
+            raise ValueError(f"thresholds must be strictly descending, got {th}")
+        self.thresholds = th
+        self.ema, self.dwell = float(ema), int(dwell)
+        self._smooth = None
+        self.stage = 0
+        self._age = self.dwell        # allow the FIRST update to advance
+        self.history = []
+
+    def update(self, skip):
+        s = float(skip)
+        if math.isfinite(s):
+            self._smooth = s if self._smooth is None else \
+                self.ema * s + (1.0 - self.ema) * self._smooth
+            if self._age >= self.dwell:
+                new = self.stage
+                while new < len(self.thresholds) and self._smooth <= self.thresholds[new]:
+                    new += 1
+                if new != self.stage:
+                    self.stage, self._age = new, -1
+        self._age += 1
+        self.history.append((len(self.history), s, self.stage))
+        return self.stage
 
 
 class DiagnosticLambda(LambdaSchedule):

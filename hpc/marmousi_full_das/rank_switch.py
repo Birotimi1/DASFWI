@@ -22,7 +22,8 @@ OPTS = ("adam", "adagrad", "sgd", "adamw", "nadam")
 CONTROLS = ("l2", "envelope", "gc", "weci")
 #: switch = envelope->l2 (default); switch-gc = envelope->gc, i.e. weci's exact
 #: pair under skip-driven timing -> isolates timing from the misfit pair.
-SWITCH_ARMS = ("switch", "switch-gc", "fixedk", "fixedk-gc")
+#: ladder = the 3-stage envelope->gc->l2 generalisation (StagedMisfit+StageLadder)
+SWITCH_ARMS = ("switch", "switch-gc", "ladder", "fixedk", "fixedk-gc")
 MARGIN = 0.05
 
 
@@ -77,11 +78,14 @@ def main():
         l2, wc = d.get(f"l2_{o}"), d.get(f"weci_{o}")
         if l2 is None or wc is None:
             continue
-        for arm in ("switch", "switch-gc"):
+        for arm in ("switch", "switch-gc", "ladder"):
             sw = d.get(f"{arm}_{o}")
             if sw is None:
                 continue
-            fk = d.get(f"{arm.replace('switch', 'fixedk')}_{o}")
+            # explicit map: str.replace would leave 'ladder' unchanged and then
+            # compare the arm against ITSELF (always firing the false warning)
+            fk_key = {"switch": "fixedk", "switch-gc": "fixedk-gc"}.get(arm)
+            fk = d.get(f"{fk_key}_{o}") if fk_key else None
             win = sw >= wc + MARGIN and sw >= l2
             note = ""
             if fk is not None and win and sw - fk < 0.02:
