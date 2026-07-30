@@ -17,10 +17,17 @@ Answers, per the verification review (F4.1):
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# repo root AND the bundled ADFWI mirror (adaptive_misfit imports ADFWI.fwi.misfit).
+# Mirrors common.py's path setup; ADFWI_ROOT overrides the bundled copy.
+_REPO = Path(__file__).resolve().parents[2]
+_ADFWI = Path(os.environ.get("ADFWI_ROOT", _REPO / "ADFWI_local"))
+for _p in (str(_ADFWI), str(_REPO)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 from inversion.adaptive_misfit import SKIP_ON_ABOVE, SKIP_OFF_BELOW
 
 RUNG_DIRS = {"s6": "", "s16": "ladder_s16", "s20": "ladder_s20"}
