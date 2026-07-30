@@ -62,6 +62,16 @@ ARMS = ("switch", "fixedk", "l2", "envelope")
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", required=True, choices=ARMS)
+    # The gate + mining showed the PAIR matters: weci = envelope->gc staged
+    # (Weci.py composes Misfit_envelope and Misfit_global_correlation) scores
+    # 0.451 at s16 while envelope alone is 0.240 and gc alone 0.210. l2 alone
+    # (0.326) refines better than gc alone, so --refiner l2 is the proposal;
+    # --refiner gc reproduces weci's exact pair under SKIP-DRIVEN timing, which
+    # isolates timing (vs weci's hardcoded iteration-150 sigmoid) as the variable.
+    ap.add_argument("--refiner", default="l2", choices=("l2", "gc"),
+                    help="the resolution term handed over TO (lambda=0)")
+    ap.add_argument("--robust", default="envelope", choices=("envelope",),
+                    help="the cycle-skip-tolerant term (lambda=1); stateless only")
     ap.add_argument("--optimizer", default="adam", choices=sorted(OPTIMIZERS))
     ap.add_argument("--start-rung", default="s16", choices=START_RUNGS,
                     dest="start_rung",
@@ -84,7 +94,10 @@ def main():
     dtype = torch.float32
     iterations = 4 if args.smoke else args.iterations
     chunk = 2 if args.smoke else max(1, args.chunk)
-    tag = f"{args.arm}_{args.optimizer}"
+    # encode the pair in the tag unless it is the default envelope->l2, so the
+    # envelope->gc variant cannot overwrite the proposal's results
+    pair = "" if args.refiner == "l2" else f"-{args.refiner}"
+    tag = f"{args.arm}{pair}_{args.optimizer}"
     if args.smoke:
         tag = "smoke_" + tag
     out_dir = OUT_ROOT / f"switch_{args.start_rung}" / tag
@@ -110,12 +123,13 @@ def main():
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100,
                                                 gamma=0.75, last_epoch=-1)
 
-    # both terms are stateless full-gather misfits (batch_size=None, normalize
-    # True) -- the pair BlendedMisfit was verified with. NOT weci (stateful).
-    loss_fn = BlendedMisfit(build_misfit("l2", iterations=iterations),
-                            build_misfit("envelope", iterations=iterations),
+    # both terms must be STATELESS full-gather misfits (batch_size=None,
+    # normalize=True). BlendedMisfit refuses weci, which carries its own
+    # iteration schedule -- see adaptive_misfit._reject_stateful.
+    loss_fn = BlendedMisfit(build_misfit(args.refiner, iterations=iterations),
+                            build_misfit(args.robust, iterations=iterations),
                             lam=1.0, normalize=True)
-    settings = MISFIT_RUN_SETTINGS["l2"]     # l2/envelope share these settings
+    settings = MISFIT_RUN_SETTINGS[args.refiner]   # l2/gc/envelope all match
 
     fwi = AcousticFWI(propagator=prop, model=model, optimizer=optimizer,
                       scheduler=scheduler, loss_fn=loss_fn, obs_data=obs_data,
@@ -153,7 +167,8 @@ def main():
         vp_final = model.vp.detach().cpu().numpy()
         sc = model_scores(vp_true, vp_final)
         metrics = dict(
-            tag=tag, arm=args.arm, device=device, iterations=iterations,
+            tag=tag, arm=args.arm, refiner=args.refiner, robust=args.robust,
+            device=device, iterations=iterations,
             iterations_done=int(done), complete=bool(complete),
             runtime_h=round(hours, 3), optimizer=args.optimizer,
             start_rung=args.start_rung, chunk=chunk,
@@ -179,7 +194,7 @@ def main():
         lam = lam_for(done, skip)
         loss_fn.set_lambda(lam)
         traj.append((done, float(skip), float(lam)))
-        mode = "ENVELOPE" if lam >= 0.5 else "L2"
+        mode = args.robust.upper() if lam >= 0.5 else args.refiner.upper()
         print(f"  iter {done:3d}: skip={skip:.3f} -> lambda={lam:.0f} ({mode})",
               flush=True)
         n = min(chunk, iterations - done)

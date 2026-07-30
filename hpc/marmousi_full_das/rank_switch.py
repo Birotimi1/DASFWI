@@ -15,8 +15,14 @@ from pathlib import Path
 
 RUNG_DIRS = {"s6": "", "s16": "ladder_s16", "s20": "ladder_s20"}
 OPTS = ("adam", "adagrad", "sgd", "adamw", "nadam")
-CONTROLS = ("l2", "envelope", "weci")
-SWITCH_ARMS = ("switch", "fixedk")
+#: weci IS envelope->gc staged (Weci.py composes Misfit_envelope and
+#: Misfit_global_correlation), so all four of these are the meaningful controls:
+#: the two components alone, the L2 refiner alone, and the staged reference.
+#: Mined @s16: envelope 0.240, gc 0.210, l2 0.326, weci 0.451 (mean over opts).
+CONTROLS = ("l2", "envelope", "gc", "weci")
+#: switch = envelope->l2 (default); switch-gc = envelope->gc, i.e. weci's exact
+#: pair under skip-driven timing -> isolates timing from the misfit pair.
+SWITCH_ARMS = ("switch", "switch-gc", "fixedk", "fixedk-gc")
 MARGIN = 0.05
 
 
@@ -61,19 +67,27 @@ def main():
         print(f"{tag:22s} {ssim:6.3f} {mape:7.2f} {str(hb):>8s} {str(re_):>7s}{flag}")
 
     # ---- win criterion, per optimizer ----------------------------------------
+    # The bar is weci (the staged envelope->gc reference), NOT l2: weci already
+    # scores 0.451 at s16 by staging internally, so beating l2 alone proves
+    # nothing about the switch. WIN = beat the staged reference by MARGIN and
+    # beat the plain refiner.
     print("-" * 74)
     d = {t.split(" ")[0]: s for t, s, *_ in rows}
     for o in OPTS:
-        sw, l2, wc = d.get(f"switch_{o}"), d.get(f"l2_{o}"), d.get(f"weci_{o}")
-        fk = d.get(f"fixedk_{o}")
-        if sw is None or l2 is None or wc is None:
+        l2, wc = d.get(f"l2_{o}"), d.get(f"weci_{o}")
+        if l2 is None or wc is None:
             continue
-        win = sw >= wc + MARGIN and sw >= l2
-        note = ""
-        if fk is not None and win and sw - fk < 0.02:
-            note = "  (but ~= fixedk: the diagnostic isn't earning its keep)"
-        print(f"{o:8s}: switch {sw:.3f} vs weci {wc:.3f} / l2 {l2:.3f}"
-              f" -> {'WIN' if win else 'no win'}{note}")
+        for arm in ("switch", "switch-gc"):
+            sw = d.get(f"{arm}_{o}")
+            if sw is None:
+                continue
+            fk = d.get(f"{arm.replace('switch', 'fixedk')}_{o}")
+            win = sw >= wc + MARGIN and sw >= l2
+            note = ""
+            if fk is not None and win and sw - fk < 0.02:
+                note = "  (but ~= fixedk: the diagnostic isn't earning its keep)"
+            print(f"{o:8s} {arm:10s}: {sw:.3f} vs weci {wc:.3f} / l2 {l2:.3f}"
+                  f" -> {'WIN' if win else 'no win'}{note}")
     print("=" * 74)
 
 
