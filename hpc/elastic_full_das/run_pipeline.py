@@ -108,8 +108,11 @@ def main():
     iters = 2 if args.smoke else args.iters
     adaptive = args.fixed is None
     f90 = ricker_f90(F0, DT, NT, integrated=True)
+    # NB the timing MUST be in the tag: otherwise --timing skip and --timing
+    # frequency produce the same directory and silently overwrite each other.
     tag = args.tag or (f"pipeline_{args.start}_"
-                       + (f"adaptive_{args.lo}-{args.hi}" if adaptive else f"fixed_{args.fixed}")
+                       + (f"{args.timing}_{args.lo}-{args.hi}" if adaptive
+                          else f"fixed_{args.fixed}")
                        + f"_{args.optimizer}" + ("_smoke" if args.smoke else ""))
     out_dir = OUT_ROOT / "pipeline" / tag
     out_dir.mkdir(parents=True, exist_ok=True)
