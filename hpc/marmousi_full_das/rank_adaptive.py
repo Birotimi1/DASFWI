@@ -84,10 +84,17 @@ def main():
         for name, m in sorted(rows, key=lambda r: -(r[1].get("ssim_vp") or 0)):
             it = ("DONE" if m.get("complete")
                   else f"{m.get('iterations_done', 0)}/{m.get('iterations', 0)}")
-            # a run whose Vs never leaves its starting model is Vp-only: the
-            # vs_release_band never fires (e.g. 1 band but release band 2)
-            vs_live = any(b.get("stage") == "vs" for b in (m.get("band_log") or []))
-            flag = "yes" if vs_live else "*** NO -- Vp-only run! ***"
+            # judge from the PLAN, not from band_log: band_log is only appended when
+            # a band FINISHES, so scanning it flags every in-progress run as
+            # Vp-only. The plan is known from iteration 0.
+            nb, rb = len(m.get("bands") or []), m.get("vs_release_band")
+            if rb is None or not nb:
+                flag = "?"
+            elif rb <= nb:
+                started = any(b.get("stage") == "vs" for b in (m.get("band_log") or []))
+                flag = "yes" if started else f"at band {rb}"
+            else:
+                flag = f"*** NO -- Vp-only! release band {rb} > {nb} band(s) ***"
             print(f"{name:44s} {m.get('ssim_vp', 0):8.3f} "
                   f"{m.get('ssim_vs', 0):8.3f} {it:>9s}  {flag}")
         return

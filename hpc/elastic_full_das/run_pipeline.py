@@ -111,12 +111,17 @@ def main():
     iters = 2 if args.smoke else args.iters
     adaptive = args.fixed is None
     f90 = ricker_f90(F0, DT, NT, integrated=True)
-    # NB the timing MUST be in the tag: otherwise --timing skip and --timing
-    # frequency produce the same directory and silently overwrite each other.
+    # The tag MUST encode every knob that changes the experiment, or two runs
+    # collide in one directory and corrupt each other. Learned twice: --timing
+    # (skip vs frequency), then the schedule itself -- `--bands full
+    # --vs-release-band 1 --iters 300` and `--bands full,full --iters 100` are
+    # different experiments that previously produced the SAME tag.
     tag = args.tag or (f"pipeline_{args.start}_"
                        + (f"{args.timing}_{args.lo}-{args.hi}" if adaptive
                           else f"fixed_{args.fixed}")
-                       + f"_{args.optimizer}" + ("_smoke" if args.smoke else ""))
+                       + f"_{args.optimizer}"
+                       + f"_b{len(bands)}x{iters}vs{args.vs_release_band}"
+                       + ("_smoke" if args.smoke else ""))
     out_dir = OUT_ROOT / "pipeline" / tag
     print(f"=== ELASTIC PIPELINE {tag} on {device} ===\n"
           f"    bands={bands} x {iters} iters | source f90={f90:.2f} Hz | "
