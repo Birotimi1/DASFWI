@@ -126,6 +126,14 @@ class BlendedMisfit(Misfit):
 
     # -- schedule control ---------------------------------------------------
     def set_lambda(self, lam):
+        if lam is None:
+            # stage_plan returns lam=None when schedule=None (the skip-driven
+            # path, where a controller sets lambda per chunk). Reaching here
+            # means a band-level setter ran on that path -- guard the call site.
+            raise ValueError(
+                "set_lambda(None): no lambda to apply. Under skip-driven timing "
+                "the controller sets lambda per chunk; the band-level call must "
+                "be guarded with `if lam is not None`.")
         if not (0.0 <= float(lam) <= 1.0):
             raise ValueError(f"lambda must be in [0,1], got {lam}")
         self.lam = float(lam)

@@ -133,6 +133,18 @@ def test_lambda_validation():
         m.set_lambda(-0.1)
 
 
+def test_skip_timing_yields_no_band_lambda():
+    """REGRESSION: under skip-driven timing stage_plan gets schedule=None and so
+    returns lam=None for every band (the controller sets lambda per chunk). A
+    band-level set_lambda(lam) then crashed run_pipeline on the elastic switch
+    arms. The plan must report None, and set_lambda must say so clearly."""
+    from inversion.adaptive_misfit import stage_plan
+    plan = stage_plan([None, None], None, 3.73, vs_release_band=2)
+    assert all(p["lam"] is None for p in plan)          # nothing to apply per band
+    with pytest.raises(ValueError, match="set_lambda\\(None\\)"):
+        BlendedMisfit(_l2(), _ot()).set_lambda(None)
+
+
 # --------------------------------------------------------------------------- #
 # schedules
 # --------------------------------------------------------------------------- #

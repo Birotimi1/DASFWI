@@ -269,7 +269,10 @@ def main():
     for step in plan:
         bi, f_band, f_eff = step["band"], step["cutoff"], step["f_eff"]
         vs_live, stage, lam = step["vs_live"], step["stage"], step["lam"]
-        if adaptive:
+        # lam is None under --timing skip (stage_plan gets schedule=None, because
+        # the SkipSwitch sets lambda per chunk inside the loop below). Only the
+        # frequency-scheduled path has a band-level lambda to apply here.
+        if adaptive and lam is not None:
             loss_fn.set_lambda(lam)
 
         params = [model.vp, model.vs] if vs_live else [model.vp]
