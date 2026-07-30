@@ -211,29 +211,48 @@ def main():
                       cache_result=True, cache_result_epoch=CACHE_EVERY,
                       save_fig_epoch=-1,
                       das_layer=bundle["das_layer"], obs_key="strain_rate")
+    # Chunked so a walltime kill keeps the latest model + curves. forward()
+    # accumulates iter_vp/iter_loss and takes start_iter, and the scheduler steps
+    # once per iteration regardless, so chunking is trajectory-identical to one
+    # call. FIELD runs are long and have no truth to fall back on -- losing one
+    # to the walltime would be a total loss.
+    CKPT_EVERY = 25
+
+    def _save(done, hours, complete):
+        iter_loss = np.asarray(fwi.iter_loss)
+        np.savez(out_dir / "iter_vp.npz", data=np.asarray(fwi.iter_vp))
+        np.savez(out_dir / "iter_loss.npz", data=iter_loss)
+        vp_final = model.vp.detach().cpu().numpy()
+        grad_final = (model.vp.grad.detach().cpu().numpy()
+                      if model.vp.grad is not None else np.zeros_like(vp_final))
+        m = dict(
+            tag=tag, well=args.well, n_shots=bundle["n_shots"], device=device,
+            iterations=iterations, iterations_done=int(done),
+            complete=bool(complete), runtime_h=round(hours, 3),
+            loss_first=float(iter_loss[0]) if len(iter_loss) else None,
+            loss_last=float(iter_loss[-1]) if len(iter_loss) else None,
+            loss_decreased=bool(len(iter_loss) > 1 and iter_loss[-1] < iter_loss[0]),
+            losses_finite=bool(np.isfinite(iter_loss).all()),
+            grad_finite=bool(np.isfinite(grad_final).all()),
+            grad_nonzero=bool(np.abs(grad_final).max() > 0),
+            vp_final_range=[float(vp_final.min()), float(vp_final.max())])
+        (out_dir / "metrics.json").write_text(json.dumps(m, indent=2))
+        return vp_final, iter_loss, m
+
     t0 = time.time()
-    fwi.forward(iteration=iterations,
-                batch_size=settings["batch_size"],
-                checkpoint_segments=settings["checkpoint_segments"])
+    done = 0
+    while done < iterations:
+        n = min(CKPT_EVERY, iterations - done)
+        fwi.forward(iteration=n, start_iter=done,
+                    batch_size=settings["batch_size"],
+                    checkpoint_segments=settings["checkpoint_segments"])
+        done += n
+        _save(done, (time.time() - t0) / 3600.0, complete=(done >= iterations))
+        print(f"  checkpoint {done}/{iterations}", flush=True)
     hours = (time.time() - t0) / 3600.0
 
     # [6] outputs (no RMS-vs-truth for field data)
-    iter_loss = np.asarray(fwi.iter_loss)
-    np.savez(out_dir / "iter_vp.npz", data=np.asarray(fwi.iter_vp))
-    np.savez(out_dir / "iter_loss.npz", data=iter_loss)
-    vp_final = model.vp.detach().cpu().numpy()
-    grad_final = (model.vp.grad.detach().cpu().numpy()
-                  if model.vp.grad is not None else np.zeros_like(vp_final))
-    metrics = dict(
-        tag=tag, well=args.well, n_shots=bundle["n_shots"], device=device,
-        iterations=iterations, runtime_h=round(hours, 3),
-        loss_first=float(iter_loss[0]), loss_last=float(iter_loss[-1]),
-        loss_decreased=bool(iter_loss[-1] < iter_loss[0]),
-        losses_finite=bool(np.isfinite(iter_loss).all()),
-        grad_finite=bool(np.isfinite(grad_final).all()),
-        grad_nonzero=bool(np.abs(grad_final).max() > 0),
-        vp_final_range=[float(vp_final.min()), float(vp_final.max())])
-    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    vp_final, iter_loss, metrics = _save(iterations, hours, complete=True)
     print(json.dumps(metrics, indent=2), flush=True)
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)

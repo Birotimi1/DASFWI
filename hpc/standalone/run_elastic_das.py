@@ -271,6 +271,29 @@ def main():
 
     losses, iter_vp, iter_vs = [], [], []
     t0 = time.time()
+
+    def _save(done, hours, complete):
+        """Written every 25 iterations so a walltime kill keeps the run."""
+        out_dir.mkdir(parents=True, exist_ok=True)   # re-create if removed mid-run
+        np.savez(out_dir / "iter_vp.npz", data=np.asarray(iter_vp))
+        np.savez(out_dir / "iter_vs.npz", data=np.asarray(iter_vs))
+        np.savez(out_dir / "iter_loss.npz", data=np.asarray(losses))
+        vp_f = model.vp.detach().cpu().numpy()
+        vs_f = model.vs.detach().cpu().numpy()
+        m = dict(tag=tag, device=device, iterations=iterations,
+                 iterations_done=int(done), complete=bool(complete),
+                 precond=args.precond, runtime_h=round(hours, 3),
+                 losses_finite=bool(np.isfinite(losses).all()) if losses else None)
+        for nm, tru, ini, fin in (("vp", vp_true, vp_init, vp_f),
+                                  ("vs", vs_true, vs_init, vs_f)):
+            dt_, di = tru - ini, fin - ini
+            denom = np.sqrt((dt_ ** 2).sum() * (di ** 2).sum())
+            m[f"rms_init_{nm}"] = float(np.sqrt(((ini - tru) ** 2).mean()))
+            m[f"rms_final_{nm}"] = float(np.sqrt(((fin - tru) ** 2).mean()))
+            m[f"update_corr_{nm}"] = (float((dt_ * di).sum() / denom)
+                                      if denom else 0.0)
+        (out_dir / "metrics.json").write_text(json.dumps(m, indent=2))
+        return vp_f, vs_f, m
     for it in range(iterations):
         optimizer.zero_grad()
         loss_iter = 0.0
@@ -313,30 +336,14 @@ def main():
             iter_vs.append(model.vs.detach().cpu().numpy().copy())
         print(f"iter {it}: loss {loss_iter:.6f} "
               f"({(time.time()-t0)/(it+1):.0f}s/iter)", flush=True)
+        if (it + 1) % 25 == 0 and (it + 1) < iterations:      # checkpoint
+            _save(it + 1, (time.time() - t0) / 3600.0, complete=False)
+            print(f"  checkpoint {it + 1}/{iterations}", flush=True)
 
     hours = (time.time() - t0) / 3600.0
 
     # [6] outputs
-    out_dir.mkdir(parents=True, exist_ok=True)   # re-create if removed mid-run
-    np.savez(out_dir / "iter_vp.npz", data=np.asarray(iter_vp))
-    np.savez(out_dir / "iter_vs.npz", data=np.asarray(iter_vs))
-    np.savez(out_dir / "iter_loss.npz", data=np.asarray(losses))
-    vp_final = model.vp.detach().cpu().numpy()
-    vs_final = model.vs.detach().cpu().numpy()
-
-    metrics = dict(tag=tag, device=device, iterations=iterations,
-                   precond=args.precond, runtime_h=round(hours, 3),
-                   losses_finite=bool(np.isfinite(losses).all()))
-    triplet = (("vp", vp_true, vp_init, vp_final),
-               ("vs", vs_true, vs_init, vs_final))
-    for nm, tru, ini, fin in triplet:
-        dt_, di = tru - ini, fin - ini
-        denom = np.sqrt((dt_ ** 2).sum() * (di ** 2).sum())
-        metrics[f"rms_init_{nm}"] = float(np.sqrt(((ini - tru) ** 2).mean()))
-        metrics[f"rms_final_{nm}"] = float(np.sqrt(((fin - tru) ** 2).mean()))
-        metrics[f"update_corr_{nm}"] = (float((dt_ * di).sum() / denom)
-                                        if denom else 0.0)
-    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    vp_final, vs_final, metrics = _save(iterations, hours, complete=True)
     print(json.dumps(metrics, indent=2), flush=True)
 
     # 2 rows (vp/vs) x 3 cols (true/initial/inverted), each on its own scale

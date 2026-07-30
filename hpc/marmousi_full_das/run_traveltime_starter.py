@@ -125,10 +125,22 @@ def main():
                       cache_result=True, cache_result_epoch=10, save_fig_epoch=-1,
                       das_layer=layer, obs_key="strain_rate")
 
+    # Chunked so a walltime kill leaves the partial model + loss curve rather
+    # than nothing (trajectory-identical to one call: forward() accumulates and
+    # start_iter only offsets the range).
     t0 = time.time()
-    fwi.forward(iteration=iters, batch_size=settings["batch_size"],
-                checkpoint_segments=settings["checkpoint_segments"],
-                cutoff_freq=args.band)
+    done = 0
+    while done < iters:
+        n = min(25, iters - done)
+        fwi.forward(iteration=n, start_iter=done, batch_size=settings["batch_size"],
+                    checkpoint_segments=settings["checkpoint_segments"],
+                    cutoff_freq=args.band)
+        done += n
+        out_dir.mkdir(parents=True, exist_ok=True)
+        np.savez(out_dir / "iter_loss.npz", data=np.asarray(fwi.iter_loss))
+        np.savez(out_dir / "vp_partial.npz",
+                 vp=model.vp.detach().cpu().numpy(), iterations_done=done)
+        print(f"  checkpoint {done}/{iters}", flush=True)
     hours = (time.time() - t0) / 3600.0
 
     vp_raw = model.vp.detach().cpu().numpy()

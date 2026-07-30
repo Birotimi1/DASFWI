@@ -191,6 +191,37 @@ def main():
     # ---- the cascade -------------------------------------------------------
     band_log, start = [], 0
     t0 = time.time()
+
+    def _save(hours, skip_end=None, complete=False):
+        """Full result set; called after every band AND every controller chunk,
+        so a walltime kill leaves the latest model + curves rather than nothing."""
+        out_dir.mkdir(parents=True, exist_ok=True)
+        iter_vp = np.asarray(fwi.iter_vp)
+        iter_loss = np.asarray(fwi.iter_loss)
+        np.savez(out_dir / "iter_vp.npz", data=iter_vp)
+        np.savez(out_dir / "iter_loss.npz", data=iter_loss)
+        vp_final = model.vp.detach().cpu().numpy()
+        sc = model_scores(vp_true, vp_final)
+        m = dict(
+            tag=tag, objective=args.objective, optimizer=args.optimizer,
+            start_rung=args.start_rung,
+            bands=[("full" if b is None else b) for b in bands],
+            iters_per_band=iters, adaptive=adaptive,
+            iterations=iters * len(bands), iterations_done=int(start),
+            complete=bool(complete),
+            flip_lo=args.flip_lo if adaptive else None,
+            flip_hi=args.flip_hi if adaptive else None,
+            device=device, runtime_h=round(hours, 3),
+            rms_init=float(np.sqrt(((vp_init - vp_true) ** 2).mean())),
+            rms_final=float(np.sqrt(((vp_final - vp_true) ** 2).mean())),
+            ssim=sc["ssim"], mape=sc["mape"], skip_final=skip_end,
+            loss_first=float(iter_loss[0]) if len(iter_loss) else None,
+            loss_last=float(iter_loss[-1]) if len(iter_loss) else None,
+            losses_finite=bool(np.isfinite(iter_loss).all()),
+            band_log=band_log,
+        )
+        (out_dir / "metrics.json").write_text(json.dumps(m, indent=2, default=str))
+        return vp_final, iter_loss, m
     for bi, f_band in enumerate(bands):
         f_eff = f90 if f_band is None else min(f_band, f90)
 
@@ -234,41 +265,14 @@ def main():
                         start_iter=start, cutoff_freq=f_band)
             start += n
             done_in_band += n
+            _save((time.time() - t0) / 3600.0)      # checkpoint every chunk
         band_log.append(dict(band=bi + 1, cutoff=f_band, f_eff=f_eff,
                              lam=lam, skip_at_start=sk0, trajectory=traj,
                              handbacks=(ctrl.handbacks if ctrl else None),
                              reentries=(ctrl.reentries if ctrl else None),
                              scales=(loss_fn.scales if adaptive else None)))
     hours = (time.time() - t0) / 3600.0
-
-    # ---- outputs -----------------------------------------------------------
-    out_dir.mkdir(parents=True, exist_ok=True)
-    iter_vp = np.asarray(fwi.iter_vp)
-    iter_loss = np.asarray(fwi.iter_loss)
-    np.savez(out_dir / "iter_vp.npz", data=iter_vp)
-    np.savez(out_dir / "iter_loss.npz", data=iter_loss)
-    vp_final = model.vp.detach().cpu().numpy()
-    sc = model_scores(vp_true, vp_final)
-    try:
-        skip_end = measure_skip(f90)["skip_fraction"]
-    except Exception:                                        # noqa: BLE001
-        skip_end = None
-
-    metrics = dict(
-        tag=tag, objective=args.objective, optimizer=args.optimizer,
-        start_rung=args.start_rung, bands=[("full" if b is None else b) for b in bands],
-        iters_per_band=iters, adaptive=adaptive,
-        flip_lo=args.flip_lo if adaptive else None,
-        flip_hi=args.flip_hi if adaptive else None,
-        device=device, runtime_h=round(hours, 3),
-        rms_init=float(np.sqrt(((vp_init - vp_true) ** 2).mean())),
-        rms_final=float(np.sqrt(((vp_final - vp_true) ** 2).mean())),
-        ssim=sc["ssim"], mape=sc["mape"], skip_final=skip_end,
-        loss_first=float(iter_loss[0]), loss_last=float(iter_loss[-1]),
-        losses_finite=bool(np.isfinite(iter_loss).all()),
-        band_log=band_log,
-    )
-    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
+    vp_final, iter_loss, metrics = _save(hours, skip_end=None, complete=True)
     print(json.dumps({k: v for k, v in metrics.items() if k != "band_log"},
                      indent=2, default=str), flush=True)
 

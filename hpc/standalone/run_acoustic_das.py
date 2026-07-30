@@ -267,27 +267,39 @@ def main():
                       cache_result=True, cache_result_epoch=CACHE_EVERY,
                       save_fig_epoch=-1,
                       das_layer=das_layer, obs_key=obs_key)
+    CKPT_EVERY = 25                 # see run_field_das: chunking is trajectory-identical
+
+    def _save(done, hours, complete):
+        iter_loss = np.asarray(fwi.iter_loss)
+        np.savez(out_dir / "iter_vp.npz", data=np.asarray(fwi.iter_vp))
+        np.savez(out_dir / "iter_loss.npz", data=iter_loss)
+        vp_final = model.vp.detach().cpu().numpy()
+        d_true, d_inv = vp_true - vp_init, vp_final - vp_init
+        denom = np.sqrt((d_true ** 2).sum() * (d_inv ** 2).sum())
+        m = dict(
+            tag=tag, device=device, iterations=iterations,
+            iterations_done=int(done), complete=bool(complete),
+            runtime_h=round(hours, 3),
+            rms_init=float(np.sqrt(((vp_init - vp_true) ** 2).mean())),
+            rms_final=float(np.sqrt(((vp_final - vp_true) ** 2).mean())),
+            update_corr=float((d_true * d_inv).sum() / denom) if denom else 0.0,
+            losses_finite=bool(np.isfinite(iter_loss).all()))
+        (out_dir / "metrics.json").write_text(json.dumps(m, indent=2))
+        return vp_final, iter_loss, m
+
     t0 = time.time()
-    fwi.forward(iteration=iterations,
-                batch_size=settings["batch_size"],
-                checkpoint_segments=settings["checkpoint_segments"])
+    done = 0
+    while done < iterations:
+        n = min(CKPT_EVERY, iterations - done)
+        fwi.forward(iteration=n, start_iter=done,
+                    batch_size=settings["batch_size"],
+                    checkpoint_segments=settings["checkpoint_segments"])
+        done += n
+        _save(done, (time.time() - t0) / 3600.0, complete=(done >= iterations))
     hours = (time.time() - t0) / 3600.0
 
     # [6] outputs
-    iter_loss = np.asarray(fwi.iter_loss)
-    np.savez(out_dir / "iter_vp.npz", data=np.asarray(fwi.iter_vp))
-    np.savez(out_dir / "iter_loss.npz", data=iter_loss)
-    vp_final = model.vp.detach().cpu().numpy()
-    d_true, d_inv = vp_true - vp_init, vp_final - vp_init
-    denom = np.sqrt((d_true ** 2).sum() * (d_inv ** 2).sum())
-    metrics = dict(
-        tag=tag, device=device, iterations=iterations,
-        runtime_h=round(hours, 3),
-        rms_init=float(np.sqrt(((vp_init - vp_true) ** 2).mean())),
-        rms_final=float(np.sqrt(((vp_final - vp_true) ** 2).mean())),
-        update_corr=float((d_true * d_inv).sum() / denom) if denom else 0.0,
-        losses_finite=bool(np.isfinite(iter_loss).all()))
-    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    vp_final, iter_loss, metrics = _save(iterations, hours, complete=True)
     print(json.dumps(metrics, indent=2), flush=True)
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 8), constrained_layout=True)
