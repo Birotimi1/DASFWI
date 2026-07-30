@@ -74,7 +74,10 @@ def main():
     ap.add_argument("--iters", type=int, default=50, help="iterations PER BAND")
     ap.add_argument("--optimizer", default="adam", choices=sorted(OPTIMIZERS))
     ap.add_argument("--lo", default="l2")
-    ap.add_argument("--hi", default="sinkhorn")
+    # envelope, NOT sinkhorn: the Phase-1 gate refuted OT (sinkhorn never beats
+    # L2 and craters with it under skip). weci is stateful and is rejected as a
+    # blend term -- see adaptive_misfit._reject_stateful.
+    ap.add_argument("--hi", default="envelope")
     ap.add_argument("--flip-lo", type=float, default=3.0, dest="flip_lo")
     ap.add_argument("--flip-hi", type=float, default=8.0, dest="flip_hi")
     ap.add_argument("--vs-release-band", type=int, default=2, dest="vs_release_band",

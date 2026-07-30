@@ -1,15 +1,25 @@
-"""PHASE 2: multiscale DAS-FWI with the frequency-adaptive L2 -> OT objective.
+"""PHASE B: multiscale DAS-FWI with the frequency-adaptive L2 -> ROBUST objective.
 
 Climbs a low->high frequency cascade (AcousticFWI's `cutoff_freq`, which
 low-passes BOTH synthetic and observed identically and differentiably) while the
-blend weight lambda ramps from L2 (resolution, safe at low frequency) to
-Wasserstein-Sinkhorn (convex in time shift, needed once cycle skipping bites).
+blend weight lambda ramps from L2 (resolution, safe at low frequency) to the
+robust term (needed once cycle skipping bites).
 
-Three ARMS, so the Phase-2 acceptance test is a single flag:
-    --objective adaptive     the L2 -> OT blend            (the proposal)
+!! The robust term is now `envelope`, NOT sinkhorn. The Phase-1 gate (2026-07-29)
+REFUTED the OT hypothesis: sinkhorn is never above L2 and craters with it under
+skip, while the phase-insensitive envelope family wins from rung s16 on. Keep
+`--hi sinkhorn` available only as a control arm for the record.
+!! Do the SINGLE-SCALE Phase A test (run_switch.py at s16) BEFORE this driver:
+multiscale changes both the skip measurement (band-limited lag, larger T/2) and
+the physics (frequency continuation), so the gate's thresholds must be
+re-verified per band first.
+
+Three ARMS, so the acceptance test is a single flag:
+    --objective adaptive     the L2 -> envelope blend      (the proposal)
     --objective l2           fixed L2 at every band        (control 1)
-    --objective sinkhorn     fixed OT at every band        (control 2)
-Any other registry misfit name also works as a control.
+    --objective envelope     fixed robust at every band    (control 2)
+Any other registry misfit name also works as a control (except weci, which is
+stateful and rejected as a blend term -- see adaptive_misfit._reject_stateful).
 
 ACCEPTANCE: adaptive >= the better fixed arm in final SSIM (tol ~0.01), with
 final-band MAPE at L2 grade, and never worse than L2 below the flip band.
@@ -76,7 +86,8 @@ def main():
     ap.add_argument("--start-rung", default=DEFAULT_RUNG, choices=START_RUNGS,
                     dest="start_rung")
     ap.add_argument("--lo", default="l2", help="low-frequency term of the blend")
-    ap.add_argument("--hi", default="sinkhorn", help="robust term of the blend")
+    ap.add_argument("--hi", default="envelope",
+                    help="robust term of the blend (gate: envelope, NOT sinkhorn)")
     ap.add_argument("--flip-lo", type=float, default=DEFAULT_FLIP_LO,
                     dest="flip_lo", help="frequency where lambda starts to rise")
     ap.add_argument("--flip-hi", type=float, default=DEFAULT_FLIP_HI,

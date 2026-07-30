@@ -85,6 +85,54 @@ def main():
 
     losses, iter_vp, iter_vs = [], [], []
     t0 = time.time()
+
+    # Elastic cells are the most expensive in the project, so -- as in the
+    # acoustic run_one -- write the full result set every CKPT_EVERY iterations.
+    # A walltime kill then still leaves the latest models, curves and a
+    # metrics.json flagged complete=false with iterations_done, instead of an
+    # empty directory (= wasted SU on a metered cluster).
+    CKPT_EVERY = 25
+
+    def _save(done, hours, complete):
+        out_dir.mkdir(parents=True, exist_ok=True)   # re-create if removed mid-run
+        np.savez(out_dir / "iter_vp.npz", data=np.asarray(iter_vp))
+        np.savez(out_dir / "iter_vs.npz", data=np.asarray(iter_vs))
+        np.savez(out_dir / "iter_loss.npz", data=np.asarray(losses))
+        vp_final = model.vp.detach().cpu().numpy()
+        vs_final = model.vs.detach().cpu().numpy()
+
+        metrics = dict(tag=tag, device=device, iterations=iterations,
+                       iterations_done=int(done), complete=bool(complete),
+                       misfit=args.misfit, optimizer=args.optimizer,
+                       precond=args.precond, runtime_h=round(hours, 3),
+                       loss_first=float(losses[0]) if losses else None,
+                       loss_last=float(losses[-1]) if losses else None,
+                       losses_finite=bool(np.isfinite(losses).all()))
+        triplet = (("vp", vp_true, vp_init, vp_final),
+                   ("vs", vs_true, vs_init, vs_final))
+        deep = slice(NZ // 2, NZ)      # deep HALF of the section (below ~mid-z):
+        #                                where illumination preconditioning acts
+        for nm, tru, ini, fin in triplet:
+            dt_, di = tru - ini, fin - ini
+            denom = np.sqrt((dt_ ** 2).sum() * (di ** 2).sum())
+            metrics[f"rms_init_{nm}"] = float(np.sqrt(((ini - tru) ** 2).mean()))
+            metrics[f"rms_final_{nm}"] = float(np.sqrt(((fin - tru) ** 2).mean()))
+            metrics[f"update_corr_{nm}"] = (float((dt_ * di).sum() / denom)
+                                            if denom else 0.0)
+            # deep-region recovery (the point of the illumination A/B)
+            metrics[f"rms_init_deep_{nm}"] = float(
+                np.sqrt(((ini[deep] - tru[deep]) ** 2).mean()))
+            metrics[f"rms_final_deep_{nm}"] = float(
+                np.sqrt(((fin[deep] - tru[deep]) ** 2).mean()))
+            # Liu's metrics: SSIM (structural, higher better) + MAPE (% err, lower)
+            sc = model_scores(tru, fin, deep=deep)
+            metrics[f"ssim_{nm}"] = sc["ssim"]
+            metrics[f"mape_{nm}"] = sc["mape"]
+            metrics[f"ssim_deep_{nm}"] = sc["ssim_deep"]
+            metrics[f"mape_deep_{nm}"] = sc["mape_deep"]
+        (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+        return vp_final, vs_final, metrics
+
     for it in range(iterations):
         optimizer.zero_grad()
         loss_iter = 0.0
@@ -128,44 +176,12 @@ def main():
             iter_vs.append(model.vs.detach().cpu().numpy().copy())
         print(f"iter {it}: loss {loss_iter:.6f} "
               f"({(time.time()-t0)/(it+1):.0f}s/iter)", flush=True)
+        if (it + 1) % CKPT_EVERY == 0 and (it + 1) < iterations:
+            _save(it + 1, (time.time() - t0) / 3600.0, complete=False)
+            print(f"  checkpoint {it + 1}/{iterations}", flush=True)
 
     hours = (time.time() - t0) / 3600.0
-
-    out_dir.mkdir(parents=True, exist_ok=True)   # re-create if it was removed mid-run
-    np.savez(out_dir / "iter_vp.npz", data=np.asarray(iter_vp))
-    np.savez(out_dir / "iter_vs.npz", data=np.asarray(iter_vs))
-    np.savez(out_dir / "iter_loss.npz", data=np.asarray(losses))
-    vp_final = model.vp.detach().cpu().numpy()
-    vs_final = model.vs.detach().cpu().numpy()
-
-    metrics = dict(tag=tag, device=device, iterations=iterations,
-                   misfit=args.misfit, optimizer=args.optimizer,
-                   precond=args.precond, runtime_h=round(hours, 3),
-                   loss_first=float(losses[0]), loss_last=float(losses[-1]),
-                   losses_finite=bool(np.isfinite(losses).all()))
-    triplet = (("vp", vp_true, vp_init, vp_final),
-               ("vs", vs_true, vs_init, vs_final))
-    deep = slice(NZ // 2, NZ)          # deep HALF of the section (below ~mid-z):
-    #                                    where illumination preconditioning acts
-    for nm, tru, ini, fin in triplet:
-        dt_, di = tru - ini, fin - ini
-        denom = np.sqrt((dt_ ** 2).sum() * (di ** 2).sum())
-        metrics[f"rms_init_{nm}"] = float(np.sqrt(((ini - tru) ** 2).mean()))
-        metrics[f"rms_final_{nm}"] = float(np.sqrt(((fin - tru) ** 2).mean()))
-        metrics[f"update_corr_{nm}"] = (float((dt_ * di).sum() / denom)
-                                        if denom else 0.0)
-        # deep-region recovery (the point of the illumination A/B)
-        metrics[f"rms_init_deep_{nm}"] = float(
-            np.sqrt(((ini[deep] - tru[deep]) ** 2).mean()))
-        metrics[f"rms_final_deep_{nm}"] = float(
-            np.sqrt(((fin[deep] - tru[deep]) ** 2).mean()))
-        # Liu's metrics: SSIM (structural, higher better) + MAPE (% err, lower)
-        sc = model_scores(tru, fin, deep=deep)
-        metrics[f"ssim_{nm}"] = sc["ssim"]
-        metrics[f"mape_{nm}"] = sc["mape"]
-        metrics[f"ssim_deep_{nm}"] = sc["ssim_deep"]
-        metrics[f"mape_deep_{nm}"] = sc["mape_deep"]
-    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    vp_final, vs_final, metrics = _save(iterations, hours, complete=True)
     print(json.dumps(metrics, indent=2), flush=True)
 
     fig, axes = plt.subplots(2, 3, figsize=(18, 8), constrained_layout=True)

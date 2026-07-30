@@ -191,6 +191,25 @@ def test_stage_plan_acoustic_has_no_vs_stage():
     assert plan[0]["lam"] == pytest.approx(0.0) and plan[1]["lam"] > 0
 
 
+def test_blend_rejects_stateful_weci():
+    """weci carries its OWN iteration schedule (envelope -> global correlation,
+    advanced by call count), so blending/switching it is silently wrong: the
+    short-circuit freezes its counter, and past max_iter/2 the 'robust' term has
+    become phase-SENSITIVE GC. BlendedMisfit must refuse it."""
+    from inversion.config import build_misfit
+    weci = build_misfit("weci", dt=0.003, iterations=300)
+    assert hasattr(weci, "iter") and hasattr(weci, "max_iter")   # the signature
+    l2 = build_misfit("l2", dt=0.003, iterations=300)
+    with pytest.raises(ValueError, match="own iteration schedule"):
+        BlendedMisfit(l2, weci)
+    with pytest.raises(ValueError, match="own iteration schedule"):
+        BlendedMisfit(weci, l2)
+    # explicit opt-out still allowed (for an externally pinned weight)
+    BlendedMisfit(l2, weci, allow_stateful=True)
+    # the stateless envelope -- the actual robust term -- is accepted
+    BlendedMisfit(l2, build_misfit("envelope", dt=0.003, iterations=300))
+
+
 def test_skip_switch_fires_at_gate_calibration():
     """THE F2 BUG TEST: with default thresholds, a start at s16's measured skip
     (0.64) must select the ROBUST term. (The originally proposed on_above=0.65

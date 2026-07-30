@@ -47,6 +47,34 @@ import torch
 from ADFWI.fwi.misfit import Misfit
 
 
+def _reject_stateful(side, fn):
+    """Refuse a misfit that carries its OWN iteration schedule as a blend term.
+
+    `weci` (ADFWI Misfit_weighted_ECI) is the case that matters: it is itself a
+    hardcoded staged switch --
+        w_i  = 1/(1+exp(-(self.iter - max_iter/2)));  loss = w_i*GC + (1-w_i)*ECI
+        self.iter += 1     # once per forward CALL
+    i.e. envelope(ECI) for the first half of max_iter, then a sigmoid hand-over
+    to GLOBAL CORRELATION, advanced by call count. Inside a switching/blending
+    controller that is silently wrong in both directions: BlendedMisfit's
+    short-circuit skips the unused term, so its counter freezes and it never
+    leaves the envelope end; and if it IS called past max_iter/2 the supposedly
+    phase-INSENSITIVE robust term has quietly become phase-SENSITIVE GC. Its
+    behaviour then depends on call history, which the controller cannot see.
+
+    Use the stateless `envelope` (Misfit_envelope) as the robust term; the
+    refinement half of weci's internal schedule is exactly what the L2 leg of
+    the switch supplies, with skip-driven rather than hardcoded timing.
+    """
+    if hasattr(fn, "iter") and hasattr(fn, "max_iter"):
+        raise ValueError(
+            f"BlendedMisfit: {type(fn).__name__} (the '{side}' term) carries its "
+            "own iteration schedule (self.iter/max_iter) and cannot be blended "
+            "or switched -- see _reject_stateful. Use the stateless 'envelope' "
+            "misfit as the robust term, or pass allow_stateful=True if you have "
+            "externally pinned its weight.")
+
+
 # --------------------------------------------------------------------------- #
 # the blended objective
 # --------------------------------------------------------------------------- #
@@ -69,8 +97,11 @@ class BlendedMisfit(Misfit):
     """
 
     def __init__(self, loss_lo, loss_hi, lam=0.0, beta=0.9, normalize=True,
-                 eps=1e-30):
+                 eps=1e-30, allow_stateful=False):
         super().__init__()
+        if not allow_stateful:
+            for side, fn in (("lo", loss_lo), ("hi", loss_hi)):
+                _reject_stateful(side, fn)
         self.loss_lo, self.loss_hi = loss_lo, loss_hi
         self.beta, self.normalize, self.eps = beta, normalize, eps
         self._ema = {"lo": None, "hi": None}
