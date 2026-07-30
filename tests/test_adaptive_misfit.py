@@ -348,6 +348,39 @@ def test_staged_misfit_rejects_stateful_weci():
                       build_misfit("weci", dt=0.003, iterations=300)])
 
 
+def test_multiscale_needs_a_fresh_switch_per_band():
+    """PHASE B semantics. Raising the band raises f_max, so skip jumps at every
+    band boundary and the controller must be free to re-enter robust mode. A
+    PERSISTENT switch's hand-back ratchet blocks that (it would stay on L2 for
+    the rest of the cascade); a FRESH switch per band does the right thing."""
+    from inversion.adaptive_misfit import SkipSwitch
+    # band 1 (low f): skip reads low -> L2 quickly. band 2 (higher f): skip jumps.
+    band1, band2 = [0.60, 0.30], [0.70, 0.30]
+
+    persistent = SkipSwitch(ema=1.0, dwell=1)
+    lams = [persistent.update(s) for s in band1 + band2]
+    assert lams[-2] == 0.0 and persistent.reentries == 1   # ratchet blocked it
+
+    fresh = []
+    for band in (band1, band2):
+        sw = SkipSwitch(ema=1.0, dwell=1)                  # fresh per band
+        fresh.append([sw.update(s) for s in band])
+    assert fresh[0] == [1.0, 0.0]        # band 1: robust -> hand over
+    assert fresh[1] == [1.0, 0.0]        # band 2: re-enters robust, hands over
+
+
+def test_low_band_hands_over_immediately():
+    """Why the Phase-A thresholds transfer to the cascade unchanged: at a low
+    band T/2 is larger, so the SAME model reads as less skipped and the
+    controller goes straight to the sharp refiner -- which is exactly why
+    multiscale works."""
+    from inversion.adaptive_misfit import SkipSwitch
+    from inversion.skip_diagnostic import skip_threshold
+    assert skip_threshold(3.0) > skip_threshold(6.25)      # looser at low f
+    # a model reading 0.30 skip at 3 Hz starts on L2, not envelope
+    assert SkipSwitch().update(0.30) == pytest.approx(0.0)
+
+
 def test_diagnostic_lambda_hysteresis():
     """Measured skipping raises lambda; good alignment lowers it; inside the
     hysteresis band the state is held (no oscillation)."""

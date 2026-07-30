@@ -46,8 +46,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from ADFWI.fwi.multiScaleProcessing import lpass
-from inversion.adaptive_misfit import (BlendedMisfit, LambdaSchedule,
-                                       stage_plan)
+from inversion.adaptive_misfit import (BlendedMisfit, LambdaSchedule, SkipSwitch,
+                                       stage_plan, SKIP_ON_ABOVE, SKIP_OFF_BELOW)
 from inversion.metrics import model_scores
 from inversion.preconditioner import illumination_weight
 from inversion.skip_diagnostic import skip_fraction, ricker_f90
@@ -85,6 +85,14 @@ def main():
     ap.add_argument("--vs-lambda-start", type=float, default=1.0, dest="vs_lambda_start",
                     help="lambda forced at Vs release (sqrt(3) seed may skip)")
     ap.add_argument("--vs-anneal-bands", type=int, default=1, dest="vs_anneal_bands")
+    ap.add_argument("--timing", choices=("skip", "frequency"), default="skip",
+                    help="how lambda is timed: 'skip' = the MEASURED cycle-skip "
+                         "fraction (Phase-A validated); 'frequency' = the original "
+                         "log-linear f-schedule (comparison arm)")
+    ap.add_argument("--chunk", type=int, default=25,
+                    help="skip timing: iterations per controller update")
+    ap.add_argument("--on-above", type=float, default=SKIP_ON_ABOVE, dest="on_above")
+    ap.add_argument("--off-below", type=float, default=SKIP_OFF_BELOW, dest="off_below")
     ap.add_argument("--precond", choices=["illum", "off"], default="off",
                     help="illumination preconditioning (Phase 0: helps sgd, wash for adam)")
     ap.add_argument("--vp-vs", type=float, default=SQRT3, dest="vp_vs")
@@ -144,9 +152,10 @@ def main():
         loss_fn = BlendedMisfit(build_misfit(args.lo, iterations=total_iters),
                                 build_misfit(args.hi, iterations=total_iters), lam=0.0)
         settings = MISFIT_RUN_SETTINGS[args.hi]
-        schedule = LambdaSchedule(args.flip_lo, args.flip_hi,
-                                  stage_overrides={"vs": args.vs_lambda_start},
-                                  stage_anneal=args.vs_anneal_bands)
+        schedule = (None if args.timing == "skip" else
+                    LambdaSchedule(args.flip_lo, args.flip_hi,
+                                   stage_overrides={"vs": args.vs_lambda_start},
+                                   stage_anneal=args.vs_anneal_bands))
     else:
         loss_fn = build_misfit(args.fixed, iterations=total_iters)
         settings = MISFIT_RUN_SETTINGS[args.fixed]
@@ -178,17 +187,42 @@ def main():
         model.vs.requires_grad_(bool(vs_live))
         optimizer = OPTIMIZERS[args.optimizer](params)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, **SCHEDULER)
-        try:
-            sk = measure_skip(f_eff)["skip_fraction"]
-        except Exception:                                     # noqa: BLE001
-            sk = float("nan")
+
+        def _skip():
+            try:
+                return measure_skip(f_eff)["skip_fraction"]
+            except Exception:                                 # noqa: BLE001
+                return float("nan")
+
+        sk = _skip()
+        # FRESH controller per band (a higher band raises f_max, so skip jumps at
+        # the boundary and the controller must be free to re-enter robust mode).
+        skip_timing = adaptive and args.timing == "skip"
+        ctrl = SkipSwitch(on_above=args.on_above,
+                          off_below=args.off_below) if skip_timing else None
+        chunk = args.chunk if skip_timing else iters
+        traj = []
         print(f"--- band {bi}/{len(bands)} cutoff="
               f"{'full' if f_band is None else f'{f_band} Hz'} | stage="
               f"{'Vp+Vs' if vs_live else 'Vp only'} | lambda="
-              f"{'-' if lam is None else f'{lam:.3f}'} | skip@start={sk:.3f} ---",
-              flush=True)
+              f"{'skip-driven' if skip_timing else ('-' if lam is None else f'{lam:.3f}')}"
+              f" | skip@start={sk:.3f} ---", flush=True)
 
-        for _ in range(iters):
+        for it in range(iters):
+            if skip_timing and it % chunk == 0:
+                sk_now = sk if it == 0 else _skip()
+                lam = ctrl.update(sk_now)
+                # Physics floor at Vs release: the sqrt(3) Vs seed can be
+                # cycle-skipped in a sedimentary cover even at 3 Hz (S delay
+                # ~200 ms > T/2 = 167 ms), so start that band robust regardless
+                # of what the Vp-dominated skip measurement says.
+                if vs_live and bi == args.vs_release_band and it == 0:
+                    lam = max(lam, args.vs_lambda_start)
+                loss_fn.set_lambda(lam)
+                traj.append(dict(iter=it, skip=float(sk_now), lam=float(lam)))
+                mode = args.hi.upper() if lam >= 0.5 else args.lo.upper()
+                print(f"    iter {it:3d}: skip={sk_now:.3f} -> lambda={lam:.0f}"
+                      f" ({mode})", flush=True)
             optimizer.zero_grad()
             loss_iter, illum = 0.0, None
             for b0 in range(0, n_shots, batch):
@@ -233,7 +267,10 @@ def main():
             print(f"iter {it_global}: loss {loss_iter:.6f} "
                   f"({(time.time()-t0)/it_global:.0f}s/iter)", flush=True)
         band_log.append(dict(band=bi, cutoff=f_band, f_eff=f_eff, stage=stage,
-                             lam=lam, skip_at_start=sk))
+                             lam=lam, skip_at_start=sk, timing=args.timing,
+                             trajectory=traj,
+                             handbacks=(ctrl.handbacks if ctrl else None),
+                             reentries=(ctrl.reentries if ctrl else None)))
 
     hours = (time.time() - t0) / 3600.0
     iter_vp.append(model.vp.detach().cpu().numpy().copy())

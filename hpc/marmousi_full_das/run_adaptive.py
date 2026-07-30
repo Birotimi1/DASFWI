@@ -9,17 +9,35 @@ robust term (needed once cycle skipping bites).
 REFUTED the OT hypothesis: sinkhorn is never above L2 and craters with it under
 skip, while the phase-insensitive envelope family wins from rung s16 on. Keep
 `--hi sinkhorn` available only as a control arm for the record.
-!! Do the SINGLE-SCALE Phase A test (run_switch.py at s16) BEFORE this driver:
-multiscale changes both the skip measurement (band-limited lag, larger T/2) and
-the physics (frequency continuation), so the gate's thresholds must be
-re-verified per band first.
+Phase A (single-scale, run_switch.py) is DONE and validated the switch at all
+three rungs: s6 0.873 (vs l2 0.867 -- correctly stays out of the way), s16 0.657,
+s20 0.527 (vs weci 0.500/0.386). It also showed a FIXED hand-over schedule HURTS
+on an easy start (fixedk 0.811 vs l2 0.866 at s6) while the skip-driven switch
+does not -- the transferability argument. 2 stages beat 3; adagrad never wins.
 
-Three ARMS, so the acceptance test is a single flag:
-    --objective adaptive     the L2 -> envelope blend      (the proposal)
-    --objective l2           fixed L2 at every band        (control 1)
-    --objective envelope     fixed robust at every band    (control 2)
+ARMS (the acceptance test is a single flag):
+    --objective switch       envelope -> L2, timed by the MEASURED skip fraction
+                             within each band  (THE PROPOSAL -- Phase A's winner,
+                             now inside the cascade)
+    --objective adaptive     lambda from the FREQUENCY schedule (the original
+                             design; kept as a comparison to skip-driven timing)
+    --objective l2           fixed L2 at every band     (control 1 -- ESSENTIAL:
+                             multiscale alone may already cure the skipping, in
+                             which case the switch adds nothing. This is the
+                             confound the arm exists to rule out.)
+    --objective envelope     fixed robust at every band (control 2)
 Any other registry misfit name also works as a control (except weci, which is
 stateful and rejected as a blend term -- see adaptive_misfit._reject_stateful).
+
+TWO design points for the multiscale switch:
+  * skip is measured with the threshold of the CURRENT band (T/2 = 1/(2*f_eff)),
+    so on a low band the same model reads as LESS skipped -- which is exactly why
+    multiscale works, and it makes the Phase-A thresholds transfer without
+    recalibration: at 3 Hz the model is usually already "aligned enough" and the
+    controller hands straight to L2, while at full band it starts robust.
+  * a FRESH SkipSwitch per band. Raising the band raises f_max, so skip jumps at
+    every band boundary and the controller must be allowed back into robust mode;
+    one persistent switch would have its hand-back ratchet block that.
 
 ACCEPTANCE: adaptive >= the better fixed arm in final SSIM (tol ~0.01), with
 final-band MAPE at L2 grade, and never worse than L2 below the flip band.
@@ -53,7 +71,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from ADFWI.fwi import AcousticFWI
-from inversion.adaptive_misfit import BlendedMisfit, LambdaSchedule
+from inversion.adaptive_misfit import (BlendedMisfit, LambdaSchedule, SkipSwitch,
+                                       SKIP_ON_ABOVE, SKIP_OFF_BELOW)
 from inversion.metrics import model_scores
 from inversion.skip_diagnostic import skip_fraction, ricker_f90
 
@@ -92,6 +111,11 @@ def main():
                     dest="flip_lo", help="frequency where lambda starts to rise")
     ap.add_argument("--flip-hi", type=float, default=DEFAULT_FLIP_HI,
                     dest="flip_hi", help="frequency where lambda reaches 1")
+    ap.add_argument("--chunk", type=int, default=25,
+                    help="switch arm: iterations per controller update")
+    ap.add_argument("--on-above", type=float, default=SKIP_ON_ABOVE, dest="on_above")
+    ap.add_argument("--off-below", type=float, default=SKIP_OFF_BELOW, dest="off_below")
+    ap.add_argument("--dwell", type=int, default=1)
     ap.add_argument("--regularization", default="none")
     ap.add_argument("--device", default=None)
     ap.add_argument("--tag", default=None)
@@ -102,11 +126,14 @@ def main():
     dtype = torch.float32
     bands = parse_bands(args.bands)
     iters = 2 if args.smoke else args.iters
-    adaptive = args.objective.lower() == "adaptive"
+    obj = args.objective.lower()
+    switch_mode = obj == "switch"
+    adaptive = obj in ("adaptive", "switch")        # both use BlendedMisfit
     if not adaptive and args.objective not in MISFITS:
-        raise SystemExit(f"--objective must be 'adaptive' or one of {MISFITS}")
+        raise SystemExit("--objective must be 'switch', 'adaptive', or one of "
+                         f"{MISFITS}")
 
-    tag = args.tag or (f"adaptive_{args.lo}-{args.hi}" if adaptive
+    tag = args.tag or ((f"{obj}_{args.lo}-{args.hi}") if adaptive
                        else f"fixed_{args.objective}")
     tag = f"{tag}_{args.optimizer}_{args.start_rung}" + ("_smoke" if args.smoke else "")
     out_dir = OUT_ROOT / "adaptive" / tag
@@ -135,8 +162,11 @@ def main():
                                 build_misfit(args.hi, iterations=total_iters),
                                 lam=0.0)
         settings = MISFIT_RUN_SETTINGS[args.hi]     # the costlier term sets batching
-        schedule = LambdaSchedule(args.flip_lo, args.flip_hi)
-        print(f"    schedule {schedule}", flush=True)
+        schedule = None if switch_mode else LambdaSchedule(args.flip_lo, args.flip_hi)
+        print(f"    {args.lo} <- switch -> {args.hi}, skip-driven "
+              f"(on_above={args.on_above} off_below={args.off_below}), "
+              f"chunk={args.chunk}" if switch_mode else f"    schedule {schedule}",
+              flush=True)
     else:
         loss_fn = build_misfit(args.objective, iterations=total_iters)
         settings = MISFIT_RUN_SETTINGS[args.objective]
@@ -163,23 +193,51 @@ def main():
     t0 = time.time()
     for bi, f_band in enumerate(bands):
         f_eff = f90 if f_band is None else min(f_band, f90)
-        lam = schedule.lam(f_eff) if adaptive else None
-        if adaptive:
-            loss_fn.set_lambda(lam)
-        try:
-            sk = measure_skip(f_eff)["skip_fraction"]
-        except Exception:                                    # noqa: BLE001
-            sk = float("nan")
+
+        def _skip():
+            try:
+                return measure_skip(f_eff)["skip_fraction"]
+            except Exception:                                # noqa: BLE001
+                return float("nan")
+
+        # FRESH controller per band: a higher band means a higher f_max, so skip
+        # jumps at the boundary and the controller must be free to re-enter
+        # robust mode -- one persistent switch's hand-back ratchet would block it.
+        ctrl = SkipSwitch(on_above=args.on_above, off_below=args.off_below,
+                          dwell=args.dwell) if switch_mode else None
+        sk0 = _skip()
         print(f"--- band {bi+1}/{len(bands)}: cutoff="
               f"{'full' if f_band is None else f'{f_band} Hz'} "
-              f"(f_eff={f_eff:.2f}) lambda={'-' if lam is None else f'{lam:.3f}'} "
-              f"skip@start={sk:.3f} ---", flush=True)
-        fwi.forward(iteration=iters, batch_size=settings["batch_size"],
-                    checkpoint_segments=settings["checkpoint_segments"],
-                    start_iter=start, cutoff_freq=f_band)
-        start += iters
+              f"(f_eff={f_eff:.2f}, T/2={1000/(2*f_eff):.0f} ms) "
+              f"skip@start={sk0:.3f} ---", flush=True)
+
+        # switch mode steps the controller every --chunk iterations; the other
+        # arms set lambda once per band, so one call is equivalent.
+        chunk = args.chunk if switch_mode else iters
+        done_in_band, lam, traj = 0, None, []
+        while done_in_band < iters:
+            sk = sk0 if done_in_band == 0 else _skip()
+            if switch_mode:
+                lam = ctrl.update(sk)
+                loss_fn.set_lambda(lam)
+                mode = args.hi.upper() if lam >= 0.5 else args.lo.upper()
+                print(f"    iter {done_in_band:3d}: skip={sk:.3f} -> "
+                      f"lambda={lam:.0f} ({mode})", flush=True)
+            elif adaptive:
+                lam = schedule.lam(f_eff)
+                loss_fn.set_lambda(lam)
+            traj.append(dict(iter=done_in_band, skip=float(sk),
+                             lam=(None if lam is None else float(lam))))
+            n = min(chunk, iters - done_in_band)
+            fwi.forward(iteration=n, batch_size=settings["batch_size"],
+                        checkpoint_segments=settings["checkpoint_segments"],
+                        start_iter=start, cutoff_freq=f_band)
+            start += n
+            done_in_band += n
         band_log.append(dict(band=bi + 1, cutoff=f_band, f_eff=f_eff,
-                             lam=lam, skip_at_start=sk,
+                             lam=lam, skip_at_start=sk0, trajectory=traj,
+                             handbacks=(ctrl.handbacks if ctrl else None),
+                             reentries=(ctrl.reentries if ctrl else None),
                              scales=(loss_fn.scales if adaptive else None)))
     hours = (time.time() - t0) / 3600.0
 
