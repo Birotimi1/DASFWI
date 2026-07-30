@@ -7,6 +7,64 @@ mathematically (Fable); Fable's four amendments are folded in.
 
 ---
 
+## ⛔ PHASE-1 GATE RESULT (2026-07-29, Bridges-2, 90 cells) — READ FIRST
+
+**The L2→OT hypothesis below is REFUTED; the adaptive objective retargets to
+L2↔ENVELOPE.** Mean SSIM over the 5 optimizers, by starting-model rung
+(measured start skip fraction in parens):
+
+| misfit | s6 (0.51) | s16 (0.64) | s20 (0.79) |
+|---|---|---|---|
+| l2 | **0.812** | 0.326 | 0.261 |
+| weci | 0.759 | **0.451** | **0.341** |
+| sinkhorn (OT) | 0.759 | 0.245 | 0.206 |
+
+`flip_curve.py` verdict: **FLIP AT s16** — L2 wins at 51% skip, collapses by 64%;
+the envelope-family (weci) wins from there, degrading gracefully. **Sinkhorn is
+never above L2 and craters with it** — OT is not the cycle-skip cure on DAS
+strain rate; the classical phase-insensitive misfits are. Also an **optimizer
+flip**: adagrad, worst at low skip, is the best optimizer under strong skip.
+
+**Fable verification of the redesign (REVISE, folded in):**
+- `weci` is itself a hardcoded staged switch (envelope for iters 0–150, then a
+  sigmoid hand-over to global correlation) and is **stateful** — it cannot sit
+  inside a switching controller. The robust term is stateless
+  **`Misfit_envelope`**; the refinement half of weci's schedule is exactly what
+  our L2 leg supplies, with skip-driven (not iteration-hardcoded) timing.
+- Thresholds: **on_above=0.58, off_below=0.45** (the originally proposed 0.65
+  sat above s16's measured 0.64 and would never have fired). off_below to be
+  refined empirically by the hand-over sweep. Hand-back is ratcheted; re-entries
+  are logged as an abort signal.
+- Phase A runs **single-scale, full band, at s16** (the gate's exact calibration
+  conditions; s20 secondary, s6 sanity). Multiscale = Phase B, after per-band
+  threshold re-verification. Elastic validation before any field use.
+
+**Implemented (inversion/adaptive_misfit.py + hpc/marmousi_full_das/):**
+`SkipSwitch` (binary λ, init-from-first-measurement, EMA, dwell, ratchet),
+`mine_gate.py` (free calibration from the gate's metrics), `handover_sweep.py`
+(~2 SU: probe cached snapshots + short L2 restarts → empirical off_below),
+`run_switch.py` (Phase A arms: switch / fixedk / l2 / envelope, checkpointed,
+logs the skip/λ trajectory), `rank_switch.py` (verdict vs the gate controls).
+
+**Phase A run order (Bridges-2):**
+```bash
+python hpc/marmousi_full_das/mine_gate.py                     # free, login node
+hpc/slurm/submit.sh handover                                  # ~2 SU, 1 GPU job
+# read both; adjust --off-below if the sweep says so, then (~10 SU):
+for OPT in adam adagrad sgd; do
+  hpc/slurm/submit.sh switch -- --arm switch --start-rung s16 --optimizer $OPT
+  hpc/slurm/submit.sh switch -- --arm fixedk --start-rung s16 --optimizer $OPT
+done
+python hpc/marmousi_full_das/rank_switch.py --rung s16        # the verdict
+# WIN = switch >= weci + 0.05 SSIM and >= l2 (and beats fixedk to justify the
+# diagnostic). Controls (l2/envelope/weci x 5 opts) come from the gate — free.
+```
+
+Everything below this line is the original plan, kept for the record; read the
+OT-based Phases 2–5 through the lens of this result (`sinkhorn` → `envelope`).
+
+---
+
 ## 0. Purpose and scientific premise
 
 **Product:** recover **Vp and Vs** from DAS **strain rate** alone, with **no

@@ -182,8 +182,89 @@ class LambdaSchedule:
                 f"stage_overrides={self.stage_overrides})")
 
 
+#: Phase-1 gate calibration (acoustic Marmousi, full band f90=6.25 Hz, 2026-07):
+#: L2 wins at measured skip 0.51 (s6) and has collapsed by 0.64 (s16), where the
+#: robust envelope family wins. The flip point is only constrained to the open
+#: interval (0.51, 0.64), so: switch TO robust safely below 0.64, and hand back
+#: to L2 only safely below 0.51 -- switching to L2 too early is the dangerous
+#: direction (a robust term lingering at skip ~0.5 cost only ~0.05 SSIM in the
+#: gate). off_below should be refined empirically by the hand-over sweep.
+SKIP_ON_ABOVE = 0.58
+SKIP_OFF_BELOW = 0.45
+
+
+class SkipSwitch:
+    """The verified STAGED misfit switch: a binary lambda in {0,1} driven by the
+    MEASURED cycle-skip fraction. lambda=1 -> robust term (envelope), lambda=0
+    -> resolution term (L2). Sits on top of BlendedMisfit, whose short-circuit
+    never evaluates the unused term and whose detached grad-norm normalization
+    keeps the adjoint-source norm ~unit across the hand-over (so Adam/adagrad
+    moment states see no orders-of-magnitude rescale at the switch).
+
+    Controller hygiene (each line fixes a failure mode found in verification):
+      * state INITIALIZES from the FIRST measurement (a hardcoded lambda=0 start
+        would run pure L2 whenever the start sits inside the hysteresis band --
+        reproducing the exact failure the switch exists to prevent);
+      * EMA smoothing of the skip series (one noisy measurement must not flip
+        the mode);
+      * a minimum DWELL (in updates) per mode -- no chatter at a threshold;
+      * a hand-back RATCHET: at most `max_handbacks` robust->L2 transitions,
+        and every attempted re-entry to robust afterwards is counted in
+        `reentries` (>0 means the hand-over criterion is suspect -- abort/inspect).
+
+    Call `update(skip)` once per measurement (e.g. per 25-iteration chunk); it
+    returns the committed lambda. `history` records (n, skip_raw, lam).
+    """
+
+    def __init__(self, on_above=SKIP_ON_ABOVE, off_below=SKIP_OFF_BELOW,
+                 ema=0.5, dwell=1, max_handbacks=1):
+        if not (0.0 <= off_below < on_above <= 1.0):
+            raise ValueError("need 0 <= off_below < on_above <= 1")
+        self.on_above, self.off_below = float(on_above), float(off_below)
+        self.ema, self.dwell = float(ema), int(dwell)
+        self.max_handbacks = int(max_handbacks)
+        self._smooth = None          # EMA of the skip series
+        self._state = None           # committed lambda; None until first update
+        self._age = 0                # updates since the last mode change
+        self.handbacks = 0           # robust -> L2 transitions committed
+        self.reentries = 0           # attempted L2 -> robust AFTER a handback
+        self.history = []
+
+    @property
+    def lam(self):
+        return 0.0 if self._state is None else self._state
+
+    def update(self, skip):
+        s = float(skip)
+        if not math.isfinite(s):                   # broken measurement: hold
+            self.history.append((len(self.history), s, self.lam))
+            return self.lam
+        self._smooth = s if self._smooth is None else \
+            self.ema * s + (1.0 - self.ema) * self._smooth
+        sm = self._smooth
+        if self._state is None:
+            # first measurement decides the starting mode; inside the band,
+            # start ROBUST (late hand-over is cheap, early hand-over is not)
+            self._state = 0.0 if sm <= self.off_below else 1.0
+        else:
+            # a robust-worthy signal AFTER a hand-back is the abort signal --
+            # log the attempt unconditionally (dwell/ratchet may still block it)
+            if self._state == 0.0 and sm >= self.on_above and self.handbacks > 0:
+                self.reentries += 1
+            if self._age >= self.dwell:
+                if self._state == 0.0 and sm >= self.on_above \
+                        and self.handbacks < self.max_handbacks:
+                    self._state, self._age = 1.0, -1
+                elif self._state == 1.0 and sm <= self.off_below:
+                    self._state, self._age = 0.0, -1
+                    self.handbacks += 1
+        self._age += 1
+        self.history.append((len(self.history), s, self._state))
+        return self._state
+
+
 class DiagnosticLambda(LambdaSchedule):
-    """PHASE 5: lambda driven by the MEASURED cycle-skip fraction, with the
+    """PHASE B: lambda driven by the MEASURED cycle-skip fraction, with the
     frequency schedule as a prior and hysteresis so it cannot oscillate.
 
     Rationale: frequency is only a proxy for skip risk. A good starting model can
@@ -192,16 +273,19 @@ class DiagnosticLambda(LambdaSchedule):
     only when skipping is actually observed.
 
     `on_above` / `off_below` are skip fractions; the gap between them is the
-    hysteresis band (an observation inside it leaves lambda unchanged).
+    hysteresis band (an observation inside it leaves lambda unchanged). Defaults
+    are the Phase-1 gate calibration. `blend=1.0` = pure skip-driven (the
+    verified configuration); lower it only to mix the frequency prior back in.
+    For the single-scale staged switch use SkipSwitch instead.
     """
 
-    def __init__(self, f_lo, f_hi, on_above=0.30, off_below=0.15,
-                 stage_overrides=None, stage_anneal=1, blend=0.5):
+    def __init__(self, f_lo, f_hi, on_above=SKIP_ON_ABOVE, off_below=SKIP_OFF_BELOW,
+                 stage_overrides=None, stage_anneal=1, blend=1.0):
         super().__init__(f_lo, f_hi, stage_overrides, stage_anneal)
         if not (0.0 <= off_below < on_above <= 1.0):
             raise ValueError("need 0 <= off_below < on_above <= 1")
         self.on_above, self.off_below, self.blend = on_above, off_below, float(blend)
-        self._state = 0.0            # last committed diagnostic-driven weight
+        self._state = None           # committed weight; None -> init from 1st obs
 
     def lam(self, f_band, stage=None, bands_since_stage_start=0,
             skip_fraction=None):
@@ -213,7 +297,8 @@ class DiagnosticLambda(LambdaSchedule):
             self._state = 1.0
         elif s <= self.off_below:                  # well aligned -> resolution
             self._state = 0.0
-        # inside the hysteresis band: keep the previous state
+        elif self._state is None:                  # first obs inside the band:
+            self._state = 1.0                      # start robust (conservative)
         return (1.0 - self.blend) * prior + self.blend * self._state
 
 

@@ -191,6 +191,54 @@ def test_stage_plan_acoustic_has_no_vs_stage():
     assert plan[0]["lam"] == pytest.approx(0.0) and plan[1]["lam"] > 0
 
 
+def test_skip_switch_fires_at_gate_calibration():
+    """THE F2 BUG TEST: with default thresholds, a start at s16's measured skip
+    (0.64) must select the ROBUST term. (The originally proposed on_above=0.65
+    sat above 0.64, so the controller would have run pure L2 exactly at the rung
+    where L2 collapses.)"""
+    from inversion.adaptive_misfit import SkipSwitch, SKIP_ON_ABOVE, SKIP_OFF_BELOW
+    assert SKIP_ON_ABOVE < 0.64          # must fire at s16
+    assert SKIP_OFF_BELOW < 0.51         # must not hand back at s6's start level
+    s = SkipSwitch()
+    assert s.update(0.64) == pytest.approx(1.0)
+
+
+def test_skip_switch_initializes_from_first_measurement():
+    from inversion.adaptive_misfit import SkipSwitch
+    # first obs inside the hysteresis band -> start ROBUST (conservative),
+    # NOT the hardcoded-0 (pure L2) behavior the review flagged
+    assert SkipSwitch().update(0.50) == pytest.approx(1.0)
+    # first obs clearly aligned -> start on L2
+    assert SkipSwitch().update(0.20) == pytest.approx(0.0)
+
+
+def test_skip_switch_handover_and_ratchet():
+    from inversion.adaptive_misfit import SkipSwitch
+    s = SkipSwitch(ema=1.0, dwell=1, max_handbacks=1)  # no smoothing, for clarity
+    assert s.update(0.70) == 1.0          # start robust
+    assert s.update(0.50) == 1.0          # in band: held
+    assert s.update(0.30) == 0.0          # below off_below: hand over to L2
+    assert s.handbacks == 1
+    lam = s.update(0.70)                  # skip rises again: ratchet holds L2
+    assert lam == 0.0 and s.reentries == 1
+    assert len(s.history) == 4
+
+
+def test_skip_switch_dwell_and_smoothing_block_chatter():
+    from inversion.adaptive_misfit import SkipSwitch
+    # dwell: a mode younger than `dwell` updates cannot flip
+    s = SkipSwitch(ema=1.0, dwell=2)
+    s.update(0.70)                        # robust, age now 1
+    assert s.update(0.10) == 1.0          # would hand over, but dwell blocks
+    assert s.update(0.10) == 0.0          # age reached -> hand-over commits
+    # EMA: one clean-looking dip must not flip the smoothed series
+    s2 = SkipSwitch(ema=0.3, dwell=1)
+    s2.update(0.70)
+    assert s2.update(0.20) == 1.0         # smoothed 0.55 > off_below: held
+    # NaN is ignored (state held)
+    assert s2.update(float("nan")) == 1.0
+
+
 def test_diagnostic_lambda_hysteresis():
     """Measured skipping raises lambda; good alignment lowers it; inside the
     hysteresis band the state is held (no oscillation)."""
