@@ -180,6 +180,38 @@ def main():
     losses, iter_vp, iter_vs, band_log = [], [], [], []
     t0 = time.time()
     it_global = 0
+    total_iters = iters * len(plan)
+    CKPT_EVERY = 25
+
+    def _save(done, hours, complete):
+        """Write the full result set. Called every CKPT_EVERY iterations and at
+        each band boundary, so a walltime kill still leaves the latest Vp/Vs,
+        curves and a metrics.json flagged complete=false."""
+        out_dir.mkdir(parents=True, exist_ok=True)
+        np.savez(out_dir / "iter_vp.npz", data=np.asarray(iter_vp))
+        np.savez(out_dir / "iter_vs.npz", data=np.asarray(iter_vs))
+        np.savez(out_dir / "iter_loss.npz", data=np.asarray(losses))
+        vp_f = model.vp.detach().cpu().numpy()
+        vs_f = model.vs.detach().cpu().numpy()
+        m = dict(tag=tag, start=args.start, adaptive=adaptive,
+                 fixed=args.fixed, optimizer=args.optimizer, timing=args.timing,
+                 bands=[("full" if b is None else b) for b in bands],
+                 iters_per_band=iters, vs_release_band=args.vs_release_band,
+                 iterations=total_iters, iterations_done=int(done),
+                 complete=bool(complete),
+                 precond=args.precond, device=device, runtime_h=round(hours, 3),
+                 losses_finite=bool(np.isfinite(losses).all()) if losses else None,
+                 band_log=band_log)
+        for nm, tru, ini, fin in (("vp", vp_true, vp_init, vp_f),
+                                  ("vs", vs_true, vs_init, vs_f)):
+            sc = model_scores(tru, fin)
+            sc0 = model_scores(tru, ini)
+            m[f"ssim_{nm}"], m[f"mape_{nm}"] = sc["ssim"], sc["mape"]
+            m[f"ssim_init_{nm}"] = sc0["ssim"]
+            m[f"rms_init_{nm}"] = float(np.sqrt(((ini - tru) ** 2).mean()))
+            m[f"rms_final_{nm}"] = float(np.sqrt(((fin - tru) ** 2).mean()))
+        (out_dir / "metrics.json").write_text(json.dumps(m, indent=2, default=str))
+        return vp_f, vs_f, m
     for step in plan:
         bi, f_band, f_eff = step["band"], step["cutoff"], step["f_eff"]
         vs_live, stage, lam = step["vs_live"], step["stage"], step["lam"]
@@ -269,39 +301,24 @@ def main():
             it_global += 1
             print(f"iter {it_global}: loss {loss_iter:.6f} "
                   f"({(time.time()-t0)/it_global:.0f}s/iter)", flush=True)
+            # Elastic pipeline cells are the longest-running jobs in the project
+            # (Vp+Vs, elastic propagator, several bands), so write the FULL result
+            # set periodically -- otherwise a walltime kill leaves nothing at all.
+            if it_global % CKPT_EVERY == 0:
+                _save(it_global, (time.time() - t0) / 3600.0, complete=False)
+                print(f"  checkpoint {it_global}/{total_iters}", flush=True)
         band_log.append(dict(band=bi, cutoff=f_band, f_eff=f_eff, stage=stage,
                              lam=lam, skip_at_start=sk, timing=args.timing,
                              trajectory=traj,
                              handbacks=(ctrl.handbacks if ctrl else None),
                              reentries=(ctrl.reentries if ctrl else None)))
+        _save(it_global, (time.time() - t0) / 3600.0,          # end of each band
+              complete=(bi >= len(plan)))
 
     hours = (time.time() - t0) / 3600.0
     iter_vp.append(model.vp.detach().cpu().numpy().copy())
     iter_vs.append(model.vs.detach().cpu().numpy().copy())
-
-    # ---- outputs -----------------------------------------------------------
-    out_dir.mkdir(parents=True, exist_ok=True)
-    np.savez(out_dir / "iter_vp.npz", data=np.asarray(iter_vp))
-    np.savez(out_dir / "iter_vs.npz", data=np.asarray(iter_vs))
-    np.savez(out_dir / "iter_loss.npz", data=np.asarray(losses))
-    vp_final = model.vp.detach().cpu().numpy()
-    vs_final = model.vs.detach().cpu().numpy()
-
-    metrics = dict(tag=tag, start=args.start, adaptive=adaptive,
-                   fixed=args.fixed, optimizer=args.optimizer,
-                   bands=[("full" if b is None else b) for b in bands],
-                   iters_per_band=iters, vs_release_band=args.vs_release_band,
-                   precond=args.precond, device=device, runtime_h=round(hours, 3),
-                   losses_finite=bool(np.isfinite(losses).all()), band_log=band_log)
-    for nm, tru, ini, fin in (("vp", vp_true, vp_init, vp_final),
-                              ("vs", vs_true, vs_init, vs_final)):
-        sc = model_scores(tru, fin)
-        sc0 = model_scores(tru, ini)
-        metrics[f"ssim_{nm}"], metrics[f"mape_{nm}"] = sc["ssim"], sc["mape"]
-        metrics[f"ssim_init_{nm}"] = sc0["ssim"]
-        metrics[f"rms_init_{nm}"] = float(np.sqrt(((ini - tru) ** 2).mean()))
-        metrics[f"rms_final_{nm}"] = float(np.sqrt(((fin - tru) ** 2).mean()))
-    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
+    vp_final, vs_final, metrics = _save(it_global, hours, complete=True)
     print(json.dumps({k: v for k, v in metrics.items() if k != "band_log"},
                      indent=2, default=str), flush=True)
 
