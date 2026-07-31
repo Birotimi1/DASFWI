@@ -270,6 +270,37 @@ def test_skip_switch_handover_and_ratchet():
     assert len(s.history) == 4
 
 
+def test_stall_guard_forces_handover_when_robust_stops_helping():
+    """THE ELASTIC DEADLOCK. Measured on elastic Marmousi from a 1-D linear
+    start: skip sat at 0.63 then 0.55 -- always above off_below=0.45 -- so the
+    controller held envelope for all 200 iterations and the model DIVERGED
+    (SSIM 0.361 -> 0.149). Skip alone cannot break this: a robust stage that is
+    degrading the model keeps skip high, which keeps it selected. The stall guard
+    forces the hand-over once robust stops reducing skip."""
+    from inversion.adaptive_misfit import SkipSwitch
+    # 4 controller updates in the band (100 iters / chunk 25), gap 0.63 -> 0.45
+    s = SkipSwitch(ema=1.0, dwell=1, patience=2, max_robust=4)
+    assert s.update(0.63) == 1.0            # robust, correctly
+    s.update(0.62)                          # crawling: projected ~0.61, hopeless
+    assert s.lam == 0.0 and s.forced_handover
+    assert s.handbacks == 1
+
+    # a robust stage that IS working must NOT be cut off
+    g = SkipSwitch(ema=1.0, dwell=1, patience=2, max_robust=4)
+    assert g.update(0.63) == 1.0
+    assert g.update(0.54) == 1.0            # on track: projected reaches 0.45
+    assert not g.forced_handover
+    assert g.update(0.44) == 0.0            # hands over on MERIT, not forced
+    assert not g.forced_handover
+
+    # with no budget given (max_robust=None) the guard is inert -- unchanged
+    # behaviour for callers that do not pass a budget
+    n = SkipSwitch(ema=1.0, dwell=1, max_robust=None)
+    for skip in (0.63, 0.62, 0.61, 0.60):
+        n.update(skip)
+    assert n.lam == 1.0 and not n.forced_handover
+
+
 def test_skip_switch_dwell_and_smoothing_block_chatter():
     from inversion.adaptive_misfit import SkipSwitch
     # dwell: a mode younger than `dwell` updates cannot flip

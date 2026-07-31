@@ -290,8 +290,11 @@ def main():
         # FRESH controller per band (a higher band raises f_max, so skip jumps at
         # the boundary and the controller must be free to re-enter robust mode).
         skip_timing = adaptive and args.timing == "skip"
-        ctrl = SkipSwitch(on_above=args.on_above,
-                          off_below=args.off_below) if skip_timing else None
+        # max_robust = the band's controller-update budget, so the stall guard
+        # can tell whether robust can still reach off_below in the time left.
+        _updates = max(1, -(-iters // max(1, args.chunk)))
+        ctrl = SkipSwitch(on_above=args.on_above, off_below=args.off_below,
+                          max_robust=_updates) if skip_timing else None
         chunk = args.chunk if skip_timing else iters
         traj = []
         print(f"--- band {bi}/{len(bands)} cutoff="

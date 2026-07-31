@@ -188,7 +188,9 @@ def main():
         return skip_fraction(syn, obs_arr, DT, f90)["skip_fraction"]
 
     ctrl = SkipSwitch(on_above=args.on_above, off_below=args.off_below,
-                      dwell=args.dwell) if args.arm == "switch" else None
+                      dwell=args.dwell,
+                      max_robust=max(1, -(-iterations // chunk))
+                      ) if args.arm == "switch" else None
 
     def lam_for(done, skip):
         if args.arm == "switch":

@@ -259,7 +259,9 @@ def main():
         # jumps at the boundary and the controller must be free to re-enter
         # robust mode -- one persistent switch's hand-back ratchet would block it.
         ctrl = SkipSwitch(on_above=args.on_above, off_below=args.off_below,
-                          dwell=args.dwell) if switch_mode else None
+                          dwell=args.dwell,
+                          max_robust=max(1, -(-iters // max(1, args.chunk)))
+                          ) if switch_mode else None
         sk0 = _skip()
         print(f"--- band {bi+1}/{len(bands)}: cutoff="
               f"{'full' if f_band is None else f'{f_band} Hz'} "

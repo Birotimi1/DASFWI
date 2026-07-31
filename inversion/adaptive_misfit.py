@@ -261,12 +261,27 @@ class SkipSwitch:
     """
 
     def __init__(self, on_above=SKIP_ON_ABOVE, off_below=SKIP_OFF_BELOW,
-                 ema=0.5, dwell=1, max_handbacks=1):
+                 ema=0.5, dwell=1, max_handbacks=1,
+                 patience=2, min_progress=0.02, max_robust=None):
         if not (0.0 <= off_below < on_above <= 1.0):
             raise ValueError("need 0 <= off_below < on_above <= 1")
         self.on_above, self.off_below = float(on_above), float(off_below)
         self.ema, self.dwell = float(ema), int(dwell)
         self.max_handbacks = int(max_handbacks)
+        # STALL GUARD. The robust stage earns its iterations by REDUCING skip; if
+        # it does not, waiting longer cannot help and may actively harm. Measured
+        # on elastic Marmousi from a 1-D linear start: skip sat at 0.63/0.55 --
+        # never reaching off_below -- so the controller held envelope for all 200
+        # iterations and the model DIVERGED (SSIM 0.361 -> 0.149). Skip alone is
+        # not a sufficient signal: a robust stage that is degrading the model
+        # keeps skip high, which keeps it selected. So force the hand-over after
+        # `patience` consecutive robust updates that fail to improve the smoothed
+        # skip by `min_progress`.
+        self.patience, self.min_progress = int(patience), float(min_progress)
+        self.max_robust = None if max_robust is None else int(max_robust)
+        self._robust_start = None    # smoothed skip when robust mode began
+        self._n_robust = 0           # updates spent in the current robust stage
+        self.forced_handover = False # set if the stall guard fired
         self._smooth = None          # EMA of the skip series
         self._state = None           # committed lambda; None until first update
         self._age = 0                # updates since the last mode change
@@ -302,6 +317,28 @@ class SkipSwitch:
                 elif self._state == 1.0 and sm <= self.off_below:
                     self._state, self._age = 0.0, -1
                     self.handbacks += 1
+        # STALL GUARD: at the observed rate, will robust reach off_below inside
+        # the remaining budget? Per-step progress is the wrong test -- a slow
+        # monotone drift (0.63 -> 0.60 over 3 updates) always "improves" yet
+        # needs 15 more updates when the band only has 4.
+        if self._state == 1.0:
+            if self._robust_start is None:
+                self._robust_start, self._n_robust = sm, 0
+            self._n_robust += 1
+            rate = (self._robust_start - sm) / max(self._n_robust, 1)
+            left = (self.max_robust - self._n_robust) if self.max_robust else None
+            # where will skip be if the remaining robust budget keeps this rate?
+            projected = sm - rate * left if left is not None else None
+            hopeless = left is not None and (
+                left <= 0 or
+                (self._n_robust >= self.patience
+                 and projected > self.off_below + self.min_progress))
+            if sm > self.off_below and hopeless:
+                self._state, self._age = 0.0, -1
+                self.handbacks += 1
+                self.forced_handover = True
+        else:
+            self._robust_start, self._n_robust = None, 0
         self._age += 1
         self.history.append((len(self.history), s, self._state))
         return self._state
