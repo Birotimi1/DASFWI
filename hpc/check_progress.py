@@ -53,7 +53,9 @@ def starters(quiet=False):
             for f in cells:
                 m = json.loads(f.read_text())
                 s1, s2 = m.get("skip_1d"), m.get("skip_starter")
-                a1, a2 = m.get("ssim_1d_vp"), m.get("ssim_starter_vp")
+                # acoustic writes ssim_1d/ssim_starter, elastic ssim_1d_vp/..._vp
+                a1 = m.get("ssim_1d_vp", m.get("ssim_1d"))
+                a2 = m.get("ssim_starter_vp", m.get("ssim_starter"))
                 ok = (isinstance(s1, (int, float)) and isinstance(s2, (int, float))
                       and isinstance(a1, (int, float)) and isinstance(a2, (int, float)))
                 good = ok and s2 < s1 - 0.01 and a2 > a1 + 0.01
@@ -70,10 +72,24 @@ def starters(quiet=False):
                     print(f"  {pj.parent.name:34s} RUNNING "
                           f"{int(z['iterations_done'])} iters done")
             best = [r for r in sorted(rows) if r[6]]
-            print(f"\n  {'BEST: ' + best[0][1] if best else 'NO CELL IS USABLE'}"
-                  + ("" if best else " -- wave-equation xcorr did not beat the "
-                                    "1-D ramp in ANY configuration; go to the "
-                                    "eikonal fallback"))
+            # A verdict needs REAL cells: a 2-iteration smoke cannot move the
+            # model, and an unreadable cell says nothing. Declaring the method
+            # dead on those would be wrong.
+            def _iters(name):
+                m = re.match(r"i(\d+)", name)
+                return int(m.group(1)) if m else 10**6      # legacy flat = real
+            MIN_REAL = 20        # fewer iterations cannot move the model at all
+            real = [r for r in rows
+                    if r[7] and "smoke" not in r[1] and _iters(r[1]) >= MIN_REAL]
+            if best:
+                print(f"\n  BEST: {best[0][1]}")
+            elif not real:
+                print("\n  NO VERDICT YET -- only smoke/incomplete cells here. "
+                      "Run the real matrix (>=100 iterations) before judging.")
+            else:
+                print(f"\n  NO CELL IS USABLE across {len(real)} real cell(s) -- "
+                      "wave-equation xcorr did not beat the 1-D ramp in ANY "
+                      "configuration; the eikonal fallback is justified")
             continue
         d = sroot
         print(f"\n=== {kind} Route B starter  ({d}) ===")
