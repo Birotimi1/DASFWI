@@ -76,6 +76,14 @@ def main():
     ap.add_argument("--robust", default="envelope", choices=("envelope",),
                     help="the cycle-skip-tolerant term (lambda=1); stateless only")
     ap.add_argument("--optimizer", default="adam", choices=sorted(OPTIMIZERS))
+    ap.add_argument("--start", default="rung", choices=("rung", "route_b"),
+                    help="route_b = the wave-equation cross-correlation starter "
+                         "(THE PLAN: what we will have at FORGE); rung = the "
+                         "smoothed-truth ladder (controlled proof only)")
+    ap.add_argument("--band", type=float, default=None,
+                    help="low-pass cut-off (Hz). Selects the REGIME from a fixed "
+                         "start: low band = non-skip, high/None = full band = "
+                         "skip. Read the starter's skip-vs-band table to choose.")
     ap.add_argument("--start-rung", default="s16", choices=START_RUNGS,
                     dest="start_rung",
                     help="s16 is the primary test point (64%% skip: L2 collapsed,"
@@ -106,16 +114,35 @@ def main():
     # encode the pair in the tag unless it is the default envelope->l2, so the
     # envelope->gc variant cannot overwrite the proposal's results
     pair = "" if args.refiner == "l2" else f"-{args.refiner}"
-    tag = f"{args.arm}{pair}_{args.optimizer}"
+    _b = "full" if args.band is None else f"{args.band:g}Hz"
+    _st = "" if args.start == "rung" else "_routeb"
+    tag = f"{args.arm}{pair}_{args.optimizer}{_st}_{_b}"
     if args.smoke:
         tag = "smoke_" + tag
-    out_dir = OUT_ROOT / f"switch_{args.start_rung}" / tag
+    _grp = "routeb" if args.start == "route_b" else args.start_rung
+    out_dir = OUT_ROOT / f"switch_{_grp}" / tag
     problems = []
     if not (OUT_ROOT / OBS_FILE).is_file():
         (print(f"    NOTE: no observed data at {OUT_ROOT / OBS_FILE} "
                "(fine for --dry-run; run genobs before the real job)")
          if args.dry_run else
          problems.append(f"no observed data at {OUT_ROOT / OBS_FILE} (run genobs)"))
+    if args.start == "route_b":
+        _f = OUT_ROOT / "starter" / "vp_start.npz"
+        if not _f.is_file():
+            problems.append(f"--start route_b but no starter at {_f} -- run "
+                            "hpc/marmousi_full_das/run_traveltime_starter.py "
+                            "(PLAN STEP 1) first")
+        else:
+            try:
+                _shp = tuple(np.load(_f)["vp_start"].shape)
+                if _shp != (NZ, NX):
+                    problems.append(f"starter is {_shp}, this grid is {(NZ, NX)}"
+                                    " -- rebuild it on this grid")
+            except Exception as e:                       # noqa: BLE001
+                problems.append(f"cannot read {_f}: {type(e).__name__}: {e}")
+    if args.band is not None and args.band <= 0:
+        problems.append(f"--band {args.band} must be positive (omit it for full band)")
     if chunk > iterations:
         problems.append(f"--chunk {chunk} > --iterations {iterations}: the "
                         "controller would never update")
@@ -127,15 +154,39 @@ def main():
     if problems:
         raise SystemExit("preflight FAILED -- nothing was run")
     if args.dry_run:
+        _f90 = ricker_f90(F0, DT, NT, integrated=True)
+        _fe = _f90 if args.band is None else min(args.band, _f90)
         print(f"    dry-run OK: arm={args.arm} {args.robust}->{args.refiner} "
-              f"rung={args.start_rung} {iterations} iters, chunk {chunk}")
+              f"start={args.start}"
+              + (f"({args.start_rung})" if args.start == "rung" else "")
+              + f" band={'full' if args.band is None else str(args.band)+'Hz'} "
+              f"-> f_eff={_fe:.2f} Hz, T/2={1000/(2*_fe):.0f} ms | "
+              f"{iterations} iters, chunk {chunk} -> {out_dir.name}")
         return
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"=== PHASE A {tag} [start={args.start_rung}] on {device}, "
           f"{iterations} iters in chunks of {chunk} ===", flush=True)
 
     # ---- setup: identical to the gate's run_one.py -----------------------------
-    vp_true, vp_init = load_models(args.start_rung)
+    # THE GOVERNING PLAN uses --start route_b: a Route B starting model (wave-
+    # equation cross-correlation, no picking) is what we will have at FORGE, so
+    # it is what the validation runs from. The smoothed-truth rungs remain
+    # available (--start rung) but they leak the true model and are only the
+    # controlled proof-of-concept, not the deployable validation.
+    vp_true, vp_rung = load_models(args.start_rung)
+    if args.start == "route_b":
+        f = OUT_ROOT / "starter" / "vp_start.npz"
+        if not f.is_file():
+            raise SystemExit(
+                f"--start route_b but no starter at {f}; run "
+                "hpc/marmousi_full_das/run_traveltime_starter.py first")
+        vp_init = np.asarray(np.load(f)["vp_start"], np.float64)
+        if vp_init.shape != vp_true.shape:
+            raise SystemExit(f"starter is {vp_init.shape}, grid is "
+                             f"{vp_true.shape} -- rebuild it on this grid")
+        print(f"    Route B starter loaded from {f}", flush=True)
+    else:
+        vp_init = vp_rung
     geometry = build_geometry()
     survey = build_survey(geometry)
     layer = DASObservationLayer(geometry, output="strain_rate").to(dtype).to(device)
@@ -143,6 +194,11 @@ def main():
     obs_data.load(str(OUT_ROOT / OBS_FILE))
     obs_arr = torch.as_tensor(obs_data.data["strain_rate"])
     f90 = ricker_f90(F0, DT, NT, integrated=True)
+    # The band SELECTS THE REGIME: skipping is |dt| > T/2 = 1/(2 f_eff), so a low
+    # band is the NON-SKIP test and a high band the SKIP test, from one and the
+    # same starting model. Skip must be measured at the band actually being
+    # inverted, not at f90, or the controller sees the wrong regime.
+    f_eff = f90 if args.band is None else min(args.band, f90)
 
     model = build_model(vp_init,
                         vp_bound=[float(vp_true.min()), float(vp_true.max())],
@@ -185,7 +241,7 @@ def main():
         with torch.no_grad():
             rec = prop.forward(checkpoint_segments=settings["checkpoint_segments"])
             syn = layer(rec["u"], rec["w"]).cpu()
-        return skip_fraction(syn, obs_arr, DT, f90)["skip_fraction"]
+        return skip_fraction(syn, obs_arr, DT, f_eff)["skip_fraction"]
 
     ctrl = SkipSwitch(on_above=args.on_above, off_below=args.off_below,
                       dwell=args.dwell,
@@ -210,6 +266,7 @@ def main():
         sc = model_scores(vp_true, vp_final)
         metrics = dict(
             tag=tag, arm=args.arm, refiner=args.refiner, robust=args.robust,
+            start=args.start, band=args.band, f_eff=f_eff,
             device=device, iterations=iterations,
             iterations_done=int(done), complete=bool(complete),
             runtime_h=round(hours, 3), optimizer=args.optimizer,
@@ -251,7 +308,8 @@ def main():
         n = min(chunk, iterations - done)
         fwi.forward(iteration=n, start_iter=done,
                     batch_size=settings["batch_size"],
-                    checkpoint_segments=settings["checkpoint_segments"])
+                    checkpoint_segments=settings["checkpoint_segments"],
+                    cutoff_freq=args.band)
         done += n
         hours = (time.time() - t0) / 3600.0
         _save(done, hours, complete=(done >= iterations))

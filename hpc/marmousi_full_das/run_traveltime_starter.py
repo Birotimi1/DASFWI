@@ -62,6 +62,8 @@ def main():
     ap.add_argument("--vp-vs", type=float, default=SQRT3, dest="vp_vs",
                     help="Vp/Vs for the Vs seed (sqrt(3) = Poisson solid)")
     ap.add_argument("--device", default=None)
+    ap.add_argument("--dry-run", action="store_true", dest="dry_run",
+                    help="validate and exit (no GPU, no data). RUN THIS FIRST.")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
 
@@ -69,6 +71,17 @@ def main():
     dtype = torch.float32
     iters = 2 if args.smoke else args.iters
     out_dir = OUT_ROOT / "starter"
+    if not (OUT_ROOT / OBS_FILE).is_file():
+        msg = f"no observed data at {OUT_ROOT / OBS_FILE} (run genobs first)"
+        if args.dry_run:
+            print(f"    NOTE: {msg} (fine for --dry-run)")
+        else:
+            raise SystemExit(f"preflight FAILED: {msg}")
+    if args.dry_run:
+        print(f"    dry-run OK: {iters} iters @ {min(args.band, ricker_f90(F0, DT, NT)):.2f} Hz"
+              f" -> {out_dir}/vp_start.npz shaped {(NZ, NX)}; then run_switch "
+              "--start route_b (PLAN STEPS 2-3)")
+        return
     out_dir.mkdir(parents=True, exist_ok=True)
     f90 = ricker_f90(F0, DT, NT, integrated=True)
     f_eff = min(args.band, f90)

@@ -7,6 +7,45 @@ mathematically (Fable); Fable's four amendments are folded in.
 
 ---
 
+# ⚑ THE GOVERNING PLAN (2026-07-31) — FOLLOW IN ORDER, DO NOT DEVIATE
+
+**Every starting model comes from Route B — wave-equation cross-correlation
+traveltime, NO picking** (`run_traveltime_starter.py`). That is what we will have
+at FORGE, so it is what the validation must use. Smoothed-truth starts leak the
+answer and are **not** acceptable as validation, even though the rung results
+already proved the switch works in that controlled setting.
+
+**The regime is chosen by FREQUENCY, not by degrading the model.** With a fixed
+start, skipping is |Δt| > T/2 = 1/(2·f_max): low band → non-skip, high band →
+skip. `skip_vs_band()` returns the whole curve from ONE forward (the lags do not
+depend on the band, only the threshold does), and the starter prints it labelled
+NO-SKIP / transition / SKIP. **Pick the test bands from that table, not by
+guessing.**
+
+| # | step | the question it answers | acceptance |
+|---|------|------------------------|------------|
+| 1 | **acoustic Route B starter** | can wave-equation xcorr build a usable start? | `skip@starter` < `skip@1-D` |
+| 2 | acoustic, **NON-SKIP** band | do we recover the true model? does the switch stay out of L2's way? | switch ≥ L2, both recover |
+| 3 | acoustic, **SKIP** band | does L2 fail, and does the switch rescue it? | switch > L2 |
+| 4 | acoustic **multiscale + switch combos** | both regimes | — |
+| 5 | **elastic**: repeat 1–4 | does it carry to Vp+Vs? | — |
+| 6 | **FORGE field** | the real thing | — |
+
+**Fallback:** if Route B cannot produce a usable start, do **not** patch around
+it — move to an **eikonal solver**. Park et al. (2025) use manual picks + a
+hybrid eikonal solver at this exact site.
+
+**Settled — do not re-run:** the acoustic switch on smoothed-truth rungs (60
+cells, s6/s16/s20, 5 optimizers — switch wins everywhere); acoustic multiscale
+(NEGATIVE, the cascade hurts); the elastic regression (0.583/0.702, reproduces
+the campaign — code validated).
+
+**Before any HPC submission:** `--dry-run` (config) **then** `--smoke`
+(execution). Both are required — `--dry-run` exits before the iteration loop and
+cannot catch runtime errors.
+
+---
+
 ## ⛔ PHASE-1 GATE RESULT (2026-07-29, Bridges-2, 90 cells) — READ FIRST
 
 **The L2→OT hypothesis below is REFUTED; the adaptive objective retargets to

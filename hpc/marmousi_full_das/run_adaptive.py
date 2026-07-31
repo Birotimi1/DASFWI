@@ -102,6 +102,9 @@ def main():
     ap.add_argument("--bands", default=DEFAULT_BANDS,
                     help="comma-separated low-pass cut-offs, 'full' for unfiltered")
     ap.add_argument("--iters", type=int, default=75, help="iterations PER BAND")
+    ap.add_argument("--start", default="rung", choices=("rung", "route_b"),
+                    help="route_b = the wave-equation cross-correlation starter "
+                         "(THE PLAN); rung = smoothed truth (controlled only)")
     ap.add_argument("--start-rung", default=DEFAULT_RUNG, choices=START_RUNGS,
                     dest="start_rung")
     ap.add_argument("--lo", default="l2", help="low-frequency term of the blend")
@@ -137,9 +140,15 @@ def main():
 
     tag = args.tag or ((f"{obj}_{args.lo}-{args.hi}") if adaptive
                        else f"fixed_{args.objective}")
-    tag = f"{tag}_{args.optimizer}_{args.start_rung}" + ("_smoke" if args.smoke else "")
+    tag = (f"{tag}_{args.optimizer}_"
+           + ("routeb" if args.start == "route_b" else args.start_rung)
+           + ("_smoke" if args.smoke else ""))
     out_dir = OUT_ROOT / "adaptive" / tag
     problems = []
+    if args.start == "route_b" and not (OUT_ROOT / "starter" / "vp_start.npz").is_file():
+        problems.append(f"--start route_b but no starter at "
+                        f"{OUT_ROOT / 'starter' / 'vp_start.npz'} -- run "
+                        "run_traveltime_starter.py (PLAN STEP 1) first")
     if not (OUT_ROOT / OBS_FILE).is_file():
         (print(f"    NOTE: no observed data at {OUT_ROOT / OBS_FILE} "
                "(fine for --dry-run; run genobs before the real job)")
@@ -166,7 +175,18 @@ def main():
     print(f"=== {tag} on {device} | bands={bands} x {iters} iters | "
           f"source f90={f90:.2f} Hz ===", flush=True)
 
-    vp_true, vp_init = load_models(args.start_rung)
+    vp_true, vp_rung = load_models(args.start_rung)
+    if args.start == "route_b":
+        _f = OUT_ROOT / "starter" / "vp_start.npz"
+        if not _f.is_file():
+            raise SystemExit(f"--start route_b but no starter at {_f}; run "
+                             "run_traveltime_starter.py (PLAN STEP 1) first")
+        vp_init = np.asarray(np.load(_f)["vp_start"], np.float64)
+        if vp_init.shape != vp_true.shape:
+            raise SystemExit(f"starter {vp_init.shape} != grid {vp_true.shape}")
+        print(f"    Route B starter loaded from {_f}", flush=True)
+    else:
+        vp_init = vp_rung
     geometry = build_geometry()
     survey = build_survey(geometry)
     layer = DASObservationLayer(geometry, output="strain_rate").to(dtype).to(device)
