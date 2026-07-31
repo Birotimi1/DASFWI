@@ -116,6 +116,36 @@ def trace_lags(syn, obs, dt, max_lag_s=None, time_axis=1, min_rel_amp=1e-6):
     return torch.where(dead, nan, lag), torch.where(dead, nan, peak)
 
 
+def skip_vs_band(syn, obs, dt, bands, max_lag_s=None, time_axis=1,
+                 min_peak=None):
+    """Skip fraction at SEVERAL band limits from ONE measurement.
+
+    The arrival-time lags are a property of the two models, not of the band;
+    only the threshold T/2 = 1/(2 f_max) changes. So the whole skip-vs-frequency
+    curve costs one cross-correlation, not one forward per band.
+
+    This is how to CHOOSE the non-skip and skip test bands for a given starting
+    model: take a band whose skip fraction sits below the controller's off_below
+    (L2 is safe -> the non-skip case) and one above its on_above (L2 should fail
+    -> the skip case), rather than guessing which frequencies bracket the flip.
+
+    Returns a list of dicts: f_max, threshold_s, skip_fraction, n_live.
+    """
+    lag, peak = trace_lags(syn, obs, dt, max_lag_s=max_lag_s, time_axis=time_axis)
+    live = torch.isfinite(lag)
+    if min_peak is not None:
+        live = live & (peak > min_peak)
+    n_live = int(live.sum())
+    out = []
+    for f in bands:
+        thr = skip_threshold(float(f))
+        sf = (float("nan") if n_live == 0 else
+              float((lag[live].abs() > thr).to(torch.float64).mean()))
+        out.append(dict(f_max=float(f), threshold_s=thr, skip_fraction=sf,
+                        n_live=n_live))
+    return out
+
+
 def skip_fraction(syn, obs, dt, f_max, max_lag_s=None, time_axis=1,
                   min_peak=None):
     """Fraction of live traces that are cycle-skipped, plus lag statistics.

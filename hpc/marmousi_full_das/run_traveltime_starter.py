@@ -41,7 +41,7 @@ import matplotlib.pyplot as plt
 
 from ADFWI.fwi import AcousticFWI
 from inversion.metrics import model_scores
-from inversion.skip_diagnostic import skip_fraction, ricker_f90
+from inversion.skip_diagnostic import skip_fraction, skip_vs_band, ricker_f90
 from inversion.starting_model import linear_vz, vs_from_vp, smooth_model, SQRT3
 
 
@@ -97,11 +97,22 @@ def main():
                         vp_grad=True, device=device, dtype=dtype)
     prop = AcousticPropagator(model, survey, device=device, dtype=dtype)
 
-    def measure_skip():
+    TEST_BANDS = (2.0, 3.0, 4.5, f90)
+
+    def _syn():
         with torch.no_grad():
             rec = prop.forward(checkpoint_segments=settings["checkpoint_segments"])
-            syn = layer(rec["u"], rec["w"]).cpu()
-        return skip_fraction(syn, obs_arr, DT, f_eff)
+            return layer(rec["u"], rec["w"]).cpu()
+
+    def measure_skip():
+        return skip_fraction(_syn(), obs_arr, DT, f_eff)
+
+    def band_table():
+        """Skip fraction at every candidate band, from ONE forward: the lags do
+        not depend on the band, only the T/2 threshold does. This is what picks
+        the NON-SKIP band (skip below off_below -> L2 is safe) and the SKIP band
+        (skip above on_above -> L2 should fail) for the follow-up runs."""
+        return skip_vs_band(_syn(), obs_arr, DT, TEST_BANDS)
 
     try:
         sk0 = measure_skip()
@@ -181,6 +192,19 @@ def main():
     np.savez(out_dir / "iter_loss.npz", data=np.asarray(fwi.iter_loss))
     print(json.dumps(meta, indent=2), flush=True)
 
+    try:
+        rows = band_table()
+        print("\n  SKIP vs BAND for the delivered starter "
+              "(picks the non-skip / skip test bands):", flush=True)
+        for r in rows:
+            f, sf = r["f_max"], r["skip_fraction"]
+            regime = ("SKIP  (L2 should fail -> the skip test)" if sf >= 0.58 else
+                      "transition" if sf > 0.45 else
+                      "NO-SKIP (L2 safe -> the non-skip test)")
+            print(f"    {f:5.2f} Hz  T/2={1000*r['threshold_s']:3.0f} ms  "
+                  f"skip={sf:.3f}   {regime}", flush=True)
+    except Exception as e:                                   # noqa: BLE001
+        print(f"  band table failed: {type(e).__name__}: {e}", flush=True)
     print("\n  ACCEPTANCE: compare skip_starter with the empirical flip threshold "
           "from Phase 1;\n  it must sit BELOW it for L2 to be safe at band 1.",
           flush=True)

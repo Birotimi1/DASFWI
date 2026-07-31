@@ -49,7 +49,7 @@ import matplotlib.pyplot as plt
 
 from ADFWI.fwi.multiScaleProcessing import lpass
 from inversion.metrics import model_scores
-from inversion.skip_diagnostic import skip_fraction, ricker_f90
+from inversion.skip_diagnostic import skip_fraction, skip_vs_band, ricker_f90
 from inversion.starting_model import (linear_vz, vs_from_vp, smooth_model,
                                       poisson_clamp, SQRT3)
 
