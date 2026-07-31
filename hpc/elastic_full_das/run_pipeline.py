@@ -154,9 +154,10 @@ def main():
             problems.append(f"no observed data at {obs_path} -- run generate_obs "
                             "(kind=genobs_elastic) first")
     if args.start == "route_b":
-        f = OUT_ROOT.parent / "marmousi_full_das" / "starter" / "vp_start.npz"
+        f = OUT_ROOT / "starter" / "vp_start.npz"
         if not f.is_file():
-            problems.append(f"--start route_b but no starter at {f}")
+            problems.append(f"--start route_b but no starter at {f} -- run "
+                            "hpc/elastic_full_das/run_traveltime_starter.py")
         else:
             # The Route B starter is built on the ACOUSTIC grid (88x200 @ 40 m);
             # this driver runs the ELASTIC grid (78x200 @ 45 m). Loading one into
@@ -169,10 +170,9 @@ def main():
                 problems.append(f"cannot read {f}: {type(e).__name__}: {e}")
             if shp is not None and shp != (NZ, NX):
                 problems.append(
-                    f"route_b starter is {shp} but this grid is {(NZ, NX)} -- the "
-                    "starter was built on the ACOUSTIC grid (40 m) and this is the "
-                    "ELASTIC grid (45 m). Rebuild the starter on this grid, or "
-                    "resample it, before using --start route_b.")
+                    f"route_b starter is {shp} but this grid is {(NZ, NX)} -- "
+                    "rebuild it with hpc/elastic_full_das/run_traveltime_starter.py "
+                    "(the ACOUSTIC starter is 88x200 @ 40 m and cannot be used here).")
     if out_dir.exists() and (out_dir / "metrics.json").is_file():
         notes.append(f"{out_dir} already has results -- this run OVERWRITES them")
     for n in notes:
@@ -195,10 +195,10 @@ def main():
     if args.start == "smooth":
         vp_init, vs_init = vp_smooth, vs_smooth
     elif args.start == "route_b":
-        f = OUT_ROOT.parent / "marmousi_full_das" / "starter" / "vp_start.npz"
+        f = OUT_ROOT / "starter" / "vp_start.npz"
         if not f.is_file():
             raise SystemExit(f"no Route B starter at {f}; run "
-                             "hpc/marmousi_full_das/run_traveltime_starter.py first")
+                             "hpc/elastic_full_das/run_traveltime_starter.py first")
         d = np.load(f)
         vp_init = np.asarray(d["vp_start"], np.float64)
         vs_init = vs_from_vp(vp_init, ratio=args.vp_vs)

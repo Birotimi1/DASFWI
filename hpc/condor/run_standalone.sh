@@ -16,6 +16,7 @@ case "$KIND" in
     # --- the adaptive-FWI pipeline (Phases 2-4) ---
     adaptive) SCRIPT=hpc/marmousi_full_das/run_adaptive.py;           USE_MO=0 ;;
     starter)  SCRIPT=hpc/marmousi_full_das/run_traveltime_starter.py; USE_MO=0 ;;
+    starter_elastic) SCRIPT=hpc/elastic_full_das/run_traveltime_starter.py; USE_MO=0 ;;
     pipeline) SCRIPT=hpc/elastic_full_das/run_pipeline.py;            USE_MO=0 ;;
     # --- Phase A: the staged envelope->L2 skip switch ---
     switch)   SCRIPT=hpc/marmousi_full_das/run_switch.py;             USE_MO=0 ;;
@@ -25,7 +26,7 @@ case "$KIND" in
     field)    SCRIPT=hpc/standalone/run_field_das.py;    USE_MO=1 ;;
     ladder)   SCRIPT=inversion/run_starting_model_ladder.py; USE_MO=0 ;;
     matrix)   SCRIPT=inversion/run_technique_matrix.py;      USE_MO=0 ;;
-    *) echo "kind must be genobs|genobs_elastic|calibrate|adaptive|starter|pipeline|switch|handover|acoustic|elastic|field|ladder|matrix, got: $KIND" >&2; exit 2 ;;
+    *) echo "kind must be genobs|genobs_elastic|calibrate|adaptive|starter|starter_elastic|pipeline|switch|handover|acoustic|elastic|field|ladder|matrix, got: $KIND" >&2; exit 2 ;;
 esac
 
 # DASFWI_ACTIVATE lets another scheduler (e.g. hpc/slurm on Bridges-2) inject its
