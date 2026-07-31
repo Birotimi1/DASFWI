@@ -157,6 +157,22 @@ def main():
         f = OUT_ROOT.parent / "marmousi_full_das" / "starter" / "vp_start.npz"
         if not f.is_file():
             problems.append(f"--start route_b but no starter at {f}")
+        else:
+            # The Route B starter is built on the ACOUSTIC grid (88x200 @ 40 m);
+            # this driver runs the ELASTIC grid (78x200 @ 45 m). Loading one into
+            # the other is a shape error -- never caught before because route_b
+            # had never been run. Fail here, not 4 hours into a GPU job.
+            try:
+                shp = tuple(np.load(f)["vp_start"].shape)
+            except Exception as e:                        # noqa: BLE001
+                shp = None
+                problems.append(f"cannot read {f}: {type(e).__name__}: {e}")
+            if shp is not None and shp != (NZ, NX):
+                problems.append(
+                    f"route_b starter is {shp} but this grid is {(NZ, NX)} -- the "
+                    "starter was built on the ACOUSTIC grid (40 m) and this is the "
+                    "ELASTIC grid (45 m). Rebuild the starter on this grid, or "
+                    "resample it, before using --start route_b.")
     if out_dir.exists() and (out_dir / "metrics.json").is_file():
         notes.append(f"{out_dir} already has results -- this run OVERWRITES them")
     for n in notes:
