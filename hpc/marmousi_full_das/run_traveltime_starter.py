@@ -77,7 +77,12 @@ def main():
     # tomography is a realistic field outcome and leaves more skipping than a
     # converged one. So each level gets its OWN directory; a fixed path would
     # silently overwrite the previous level.
-    out_dir = OUT_ROOT / "starter" / (args.tag or f"i{iters}")
+    # The tag must carry EVERY knob that changes the starter, or a comparison
+    # matrix silently overwrites itself (this class of bug has now appeared four
+    # times: --timing, --bands, the starter level, and here).
+    out_dir = OUT_ROOT / "starter" / (
+        args.tag or f"i{iters}_{args.misfit}_{args.optimizer}"
+                    f"_b{args.band:g}")
     if not (OUT_ROOT / OBS_FILE).is_file():
         msg = f"no observed data at {OUT_ROOT / OBS_FILE} (run genobs first)"
         if args.dry_run:

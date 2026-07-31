@@ -33,11 +33,41 @@ def _loss_trend(d):
 
 
 def starters(quiet=False):
-    """Route B starters: the acceptance number is skip@starter vs skip@1-D."""
+    """Route B starters: the acceptance number is skip@starter vs skip@1-D.
+
+    Ranks a whole comparison matrix (misfit x optimizer x iterations) so the
+    method can be judged on its best configuration, not on one under-stepped
+    run."""
     for kind, root in ROOTS.items():
-        d = root / "starter"
-        if not d.is_dir():
+        sroot = root / "starter"
+        if not sroot.is_dir():
             continue
+        cells = sorted(sroot.glob("*/starter_metrics.json"))
+        if len(cells) > 1:                       # a matrix -> rank it
+            print(f"\n=== {kind} Route B starter MATRIX ({len(cells)} cells) ===")
+            print(f"  {'cell':34s} {'skip 1-D':>9s} {'skip start':>11s} "
+                  f"{'d skip':>7s} {'SSIM 1-D':>9s} {'SSIM start':>11s} {'verdict':>9s}")
+            rows = []
+            for f in cells:
+                m = json.loads(f.read_text())
+                s1, s2 = m.get("skip_1d"), m.get("skip_starter")
+                a1, a2 = m.get("ssim_1d_vp"), m.get("ssim_starter_vp")
+                ok = (isinstance(s1, (int, float)) and isinstance(s2, (int, float))
+                      and isinstance(a1, (int, float)) and isinstance(a2, (int, float)))
+                good = ok and s2 < s1 - 0.01 and a2 > a1 + 0.01
+                rows.append((s2 if ok else 9e9, f.parent.name, s1, s2, a1, a2, good, ok))
+            for _, name, s1, s2, a1, a2, good, ok in sorted(rows):
+                if not ok:
+                    print(f"  {name:34s} (incomplete)"); continue
+                print(f"  {name:34s} {s1:9.3f} {s2:11.3f} {s2-s1:+7.3f} "
+                      f"{a1:9.3f} {a2:11.3f} {'USABLE' if good else '  --':>9s}")
+            best = [r for r in sorted(rows) if r[6]]
+            print(f"\n  {'BEST: ' + best[0][1] if best else 'NO CELL IS USABLE'}"
+                  + ("" if best else " -- wave-equation xcorr did not beat the "
+                                    "1-D ramp in ANY configuration; go to the "
+                                    "eikonal fallback"))
+            continue
+        d = sroot
         print(f"\n=== {kind} Route B starter  ({d}) ===")
         mf = d / "starter_metrics.json"
         if mf.is_file():
