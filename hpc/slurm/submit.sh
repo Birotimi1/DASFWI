@@ -32,7 +32,13 @@ if [[ $# -gt 0 && "$1" != "--" ]]; then OPT="$1";    shift; fi
 case "$KIND" in
     smoke)                 DEF_T="00:20:00" ;;
     genobs|genobs_elastic) DEF_T="01:00:00" ;;
-    calibrate|starter)     DEF_T="02:00:00" ;;
+    calibrate)             DEF_T="02:00:00" ;;
+    # starter: the traveltime misfit runs ~30-60 s/iter on acoustic (batch_size=5
+    # + checkpoint recomputation + per-trace FFT), so 300 iterations needs 2.5-5 h.
+    # The old 2 h default killed cells before they wrote their acceptance numbers,
+    # which are only computed at the END. SLURM charges ACTUAL runtime, not the
+    # reservation, so a generous cap is free insurance.
+    starter|starter_elastic) DEF_T="08:00:00" ;;
     *)                     DEF_T="08:00:00" ;;
 esac
 WALLTIME="${WALLTIME:-$DEF_T}"
