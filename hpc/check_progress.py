@@ -43,7 +43,9 @@ def starters(quiet=False):
         if not sroot.is_dir():
             continue
         cells = sorted(sroot.glob("*/starter_metrics.json"))
-        if len(cells) > 1:                       # a matrix -> rank it
+        if (sroot / "starter_metrics.json").is_file():        # legacy flat layout
+            cells.append(sroot / "starter_metrics.json")
+        if cells:                                 # one cell or a matrix -> rank
             print(f"\n=== {kind} Route B starter MATRIX ({len(cells)} cells) ===")
             print(f"  {'cell':34s} {'skip 1-D':>9s} {'skip start':>11s} "
                   f"{'d skip':>7s} {'SSIM 1-D':>9s} {'SSIM start':>11s} {'verdict':>9s}")
@@ -61,6 +63,12 @@ def starters(quiet=False):
                     print(f"  {name:34s} (incomplete)"); continue
                 print(f"  {name:34s} {s1:9.3f} {s2:11.3f} {s2-s1:+7.3f} "
                       f"{a1:9.3f} {a2:11.3f} {'USABLE' if good else '  --':>9s}")
+            # still-running cells have no starter_metrics.json yet
+            for pj in sorted(sroot.glob("*/vp_partial.npz")):
+                if not (pj.parent / "starter_metrics.json").is_file():
+                    z = np.load(pj)
+                    print(f"  {pj.parent.name:34s} RUNNING "
+                          f"{int(z['iterations_done'])} iters done")
             best = [r for r in sorted(rows) if r[6]]
             print(f"\n  {'BEST: ' + best[0][1] if best else 'NO CELL IS USABLE'}"
                   + ("" if best else " -- wave-equation xcorr did not beat the "
