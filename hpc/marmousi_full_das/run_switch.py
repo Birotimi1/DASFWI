@@ -31,6 +31,7 @@ overhead). Checkpoints (iter_vp/iter_loss/metrics.json + the full skip/lambda
 trajectory) are written every chunk, so a walltime kill loses nothing.
 """
 import argparse
+import re
 import json
 import os
 import sys
@@ -62,6 +63,22 @@ ARMS = ("switch", "fixedk", "ladder", "l2", "envelope")
 LADDER_STAGES = ("envelope", "gc", "l2")     # robust -> gentle -> sharp refiner
 
 
+def _starter_file(name=None):
+    """Path to a Route B starter. Each convergence level lives in its own
+    subdirectory (starter/i20, starter/i80, ...); with no name, pick the most
+    converged one available so a single-starter setup needs no flag."""
+    root = OUT_ROOT / "starter"
+    if name:
+        return root / name / "vp_start.npz"
+    cands = sorted(root.glob("*/vp_start.npz")) if root.is_dir() else []
+    if not cands:
+        return root / "i80" / "vp_start.npz"          # canonical, for the message
+    def _n(p):
+        m = re.match(r"i(\d+)$", p.parent.name)
+        return int(m.group(1)) if m else -1
+    return max(cands, key=_n)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", required=True, choices=ARMS)
@@ -76,6 +93,10 @@ def main():
     ap.add_argument("--robust", default="envelope", choices=("envelope",),
                     help="the cycle-skip-tolerant term (lambda=1); stateless only")
     ap.add_argument("--optimizer", default="adam", choices=sorted(OPTIMIZERS))
+    ap.add_argument("--starter", default=None,
+                    help="which Route B starter to use, e.g. i20 (partly "
+                         "converged -> more skipping) or i80. Default: the only "
+                         "one present, else the most converged.")
     ap.add_argument("--start", default="rung", choices=("rung", "route_b"),
                     help="route_b = the wave-equation cross-correlation starter "
                          "(THE PLAN: what we will have at FORGE); rung = the "
@@ -115,7 +136,11 @@ def main():
     # envelope->gc variant cannot overwrite the proposal's results
     pair = "" if args.refiner == "l2" else f"-{args.refiner}"
     _b = "full" if args.band is None else f"{args.band:g}Hz"
-    _st = "" if args.start == "rung" else "_routeb"
+    # the STARTER NAME must be in the tag: i20 and i80 are different experiments
+    # (that is the whole point of the convergence axis) and would otherwise
+    # overwrite each other -- the same collision already hit --timing and --bands
+    _st = ("" if args.start == "rung"
+           else "_" + _starter_file(args.starter).parent.name)
     tag = f"{args.arm}{pair}_{args.optimizer}{_st}_{_b}"
     if args.smoke:
         tag = "smoke_" + tag
@@ -128,7 +153,7 @@ def main():
          if args.dry_run else
          problems.append(f"no observed data at {OUT_ROOT / OBS_FILE} (run genobs)"))
     if args.start == "route_b":
-        _f = OUT_ROOT / "starter" / "vp_start.npz"
+        _f = _starter_file(args.starter)
         if not _f.is_file():
             problems.append(f"--start route_b but no starter at {_f} -- run "
                             "hpc/marmousi_full_das/run_traveltime_starter.py "
@@ -175,7 +200,7 @@ def main():
     # controlled proof-of-concept, not the deployable validation.
     vp_true, vp_rung = load_models(args.start_rung)
     if args.start == "route_b":
-        f = OUT_ROOT / "starter" / "vp_start.npz"
+        f = _starter_file(args.starter)
         if not f.is_file():
             raise SystemExit(
                 f"--start route_b but no starter at {f}; run "

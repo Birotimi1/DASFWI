@@ -49,6 +49,7 @@ The lambda schedule's (f_lo, f_hi) MUST come from the Phase-1 flip curve; the
 defaults here are placeholders, not physics. Pass --flip-lo/--flip-hi.
 """
 import argparse
+import re
 import json
 import os
 import sys
@@ -94,6 +95,22 @@ def parse_bands(spec):
     return out
 
 
+def _starter_file(name=None):
+    """Path to a Route B starter. Each convergence level lives in its own
+    subdirectory (starter/i20, starter/i80, ...); with no name, pick the most
+    converged one available so a single-starter setup needs no flag."""
+    root = OUT_ROOT / "starter"
+    if name:
+        return root / name / "vp_start.npz"
+    cands = sorted(root.glob("*/vp_start.npz")) if root.is_dir() else []
+    if not cands:
+        return root / "i80" / "vp_start.npz"          # canonical, for the message
+    def _n(p):
+        m = re.match(r"i(\d+)$", p.parent.name)
+        return int(m.group(1)) if m else -1
+    return max(cands, key=_n)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--objective", default="adaptive",
@@ -102,6 +119,10 @@ def main():
     ap.add_argument("--bands", default=DEFAULT_BANDS,
                     help="comma-separated low-pass cut-offs, 'full' for unfiltered")
     ap.add_argument("--iters", type=int, default=75, help="iterations PER BAND")
+    ap.add_argument("--starter", default=None,
+                    help="which Route B starter to use, e.g. i20 (partly "
+                         "converged -> more skipping) or i80. Default: the only "
+                         "one present, else the most converged.")
     ap.add_argument("--start", default="rung", choices=("rung", "route_b"),
                     help="route_b = the wave-equation cross-correlation starter "
                          "(THE PLAN); rung = smoothed truth (controlled only)")
@@ -141,11 +162,12 @@ def main():
     tag = args.tag or ((f"{obj}_{args.lo}-{args.hi}") if adaptive
                        else f"fixed_{args.objective}")
     tag = (f"{tag}_{args.optimizer}_"
-           + ("routeb" if args.start == "route_b" else args.start_rung)
+           + (_starter_file(args.starter).parent.name
+              if args.start == "route_b" else args.start_rung)
            + ("_smoke" if args.smoke else ""))
     out_dir = OUT_ROOT / "adaptive" / tag
     problems = []
-    if args.start == "route_b" and not (OUT_ROOT / "starter" / "vp_start.npz").is_file():
+    if args.start == "route_b" and not (_starter_file(args.starter)).is_file():
         problems.append(f"--start route_b but no starter at "
                         f"{OUT_ROOT / 'starter' / 'vp_start.npz'} -- run "
                         "run_traveltime_starter.py (PLAN STEP 1) first")
@@ -177,7 +199,7 @@ def main():
 
     vp_true, vp_rung = load_models(args.start_rung)
     if args.start == "route_b":
-        _f = OUT_ROOT / "starter" / "vp_start.npz"
+        _f = _starter_file(args.starter)
         if not _f.is_file():
             raise SystemExit(f"--start route_b but no starter at {_f}; run "
                              "run_traveltime_starter.py (PLAN STEP 1) first")

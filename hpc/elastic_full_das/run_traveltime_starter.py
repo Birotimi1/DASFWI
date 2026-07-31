@@ -67,6 +67,9 @@ def main():
     ap.add_argument("--v-top", type=float, default=1500.0, dest="v_top")
     ap.add_argument("--v-bottom", type=float, default=4000.0, dest="v_bottom")
     ap.add_argument("--vp-vs", type=float, default=SQRT3, dest="vp_vs")
+    ap.add_argument("--tag", default=None,
+                    help="starter name (default i<iters>); each convergence "
+                         "level needs its own so they do not overwrite")
     ap.add_argument("--device", default=None)
     ap.add_argument("--dry-run", action="store_true", dest="dry_run")
     ap.add_argument("--smoke", action="store_true")
@@ -74,7 +77,11 @@ def main():
 
     device = pick_device(args.device)
     iters = 2 if args.smoke else args.iters
-    out_dir = OUT_ROOT / "starter"
+    # PLAN (b): the starter's CONVERGENCE is the skip axis -- a partly converged
+    # tomography is a realistic field outcome and leaves more skipping than a
+    # converged one. So each level gets its OWN directory; a fixed path would
+    # silently overwrite the previous level.
+    out_dir = OUT_ROOT / "starter" / (args.tag or f"i{iters}")
     f90 = ricker_f90(F0, DT, NT, integrated=True)
     band = min(args.band, f90)
     print(f"=== ELASTIC Route B starter on {device} | {iters} iters @ "

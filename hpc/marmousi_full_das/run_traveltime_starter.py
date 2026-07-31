@@ -61,6 +61,9 @@ def main():
     ap.add_argument("--v-bottom", type=float, default=4000.0, dest="v_bottom")
     ap.add_argument("--vp-vs", type=float, default=SQRT3, dest="vp_vs",
                     help="Vp/Vs for the Vs seed (sqrt(3) = Poisson solid)")
+    ap.add_argument("--tag", default=None,
+                    help="starter name (default i<iters>); each convergence "
+                         "level needs its own so they do not overwrite")
     ap.add_argument("--device", default=None)
     ap.add_argument("--dry-run", action="store_true", dest="dry_run",
                     help="validate and exit (no GPU, no data). RUN THIS FIRST.")
@@ -70,7 +73,11 @@ def main():
     device = pick_device(args.device)
     dtype = torch.float32
     iters = 2 if args.smoke else args.iters
-    out_dir = OUT_ROOT / "starter"
+    # PLAN (b): the starter's CONVERGENCE is the skip axis -- a partly converged
+    # tomography is a realistic field outcome and leaves more skipping than a
+    # converged one. So each level gets its OWN directory; a fixed path would
+    # silently overwrite the previous level.
+    out_dir = OUT_ROOT / "starter" / (args.tag or f"i{iters}")
     if not (OUT_ROOT / OBS_FILE).is_file():
         msg = f"no observed data at {OUT_ROOT / OBS_FILE} (run genobs first)"
         if args.dry_run:
