@@ -78,13 +78,19 @@ def runs(what):
             dirs = sorted(p for p in root.iterdir() if p.is_dir())
         if what not in (None, name) or not dirs:
             continue
-        print(f"\n=== {name}  ({len(dirs)} cells) ===")
-        for d in dirs:
-            f = d / "metrics.json"
-            if not f.is_file():
-                print(f"  {d.name:52s} (no checkpoint yet)")
-                continue
-            m = json.loads(f.read_text())
+        # label switch cells with their RUNG (switch_s16/switch_adam), otherwise
+        # s6/s16/s20 cells are indistinguishable in the listing
+        def _label(d):
+            return (f"{d.parent.name.replace('switch_', '')}/{d.name}"
+                    if name == "switch" else d.name)
+
+        empty = [d for d in dirs if not (d / "metrics.json").is_file()]
+        dirs = [d for d in dirs if (d / "metrics.json").is_file()]
+        print(f"\n=== {name}  ({len(dirs)} cells"
+              + (f", {len(empty)} empty dirs from failed/older runs" if empty else "")
+              + ") ===")
+        for d in sorted(dirs, key=_label):
+            m = json.loads((d / "metrics.json").read_text())
             done = m.get("iterations_done", "?")
             tot = m.get("iterations", "?")
             state = "DONE" if m.get("complete") else f"{done}/{tot}"
@@ -93,9 +99,11 @@ def runs(what):
                   f"ssim {m.get('ssim', float('nan')):.3f}")
             init = m.get("ssim_init_vp")
             warn = ""
-            if isinstance(init, (int, float)) and m.get("ssim_vp", 1) < init:
+            done_n = m.get("iterations_done") or 0
+            if (isinstance(init, (int, float)) and m.get("ssim_vp", 1) < init
+                    and done_n >= 10):        # ignore 2-iteration smokes
                 warn = f"  *** DIVERGED (init {init:.3f}) ***"
-            print(f"  {d.name:52s} {state:>9s}  {sc}{warn}")
+            print(f"  {_label(d):46s} {state:>9s}  {sc}{warn}")
 
 
 def main():
