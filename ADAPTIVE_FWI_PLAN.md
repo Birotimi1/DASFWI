@@ -46,6 +46,68 @@ cannot catch runtime errors.
 
 ---
 
+# 📁 CODEBASE MAP (for a fresh reader or a model picking this up cold)
+
+```
+DASFWI/
+├── ADFWI_local/          Liu Feng's ADFWI, vendored. Propagators, misfits,
+│                         optimizers, the FWI loops. `ADFWI.fwi.AcousticFWI`
+│                         auto-routes LBFGS/NLCG through forward_closure().
+├── inversion/            OUR method code (the science)
+│   ├── config.py             SINGLE SOURCE OF TRUTH: MISFITS, LIU_OPTIMIZERS,
+│   │                         MISFIT_SETTINGS (batch/checkpoint/normalize).
+│   │                         Every driver imports from here.
+│   ├── adaptive_misfit.py    THE SWITCH. BlendedMisfit (grad-norm normalised,
+│   │                         short-circuited), SkipSwitch (binary lambda +
+│   │                         hysteresis + dwell + ratchet + stall guard),
+│   │                         StagedMisfit/StageLadder (N-stage), LambdaSchedule,
+│   │                         DiagnosticLambda, stage_plan.
+│   ├── skip_diagnostic.py    THE TRIGGER. trace_lags (FFT xcorr), skip_fraction,
+│   │                         skip_vs_band (whole curve from ONE measurement),
+│   │                         ricker_f90, skip_threshold.
+│   ├── das_conditioning.py   Noe et al. conditioning: wavelength_span (lambda/4),
+│   │                         arrival_window, channel_weights, ConditionedMisfit.
+│   ├── starting_model.py     linear_vz, vs_from_vp (sqrt3), poisson_clamp.
+│   ├── safe_misfits.py       numerics-hardened misfit subclasses + apply_misfit.
+│   └── metrics.py            SSIM + MAPE (Liu's metrics).
+├── forge/                FORGE field: proxy_model, traveltime_tomography
+│                         (STA/LTA picking -- the eikonal-style fallback path).
+├── das/                  DAS observation operator (E3 gauge -> strain rate).
+├── hpc/
+│   ├── marmousi_full_das/    ACOUSTIC campaign + the plan's steps 1-4
+│   │   ├── common.py             grid/source/acquisition, load_models(rung),
+│   │   │                         START_RUNGS, build_* helpers. 88x200 @ 40 m.
+│   │   ├── run_one.py            one campaign cell (the 90-job gate)
+│   │   ├── run_traveltime_starter.py  STEP 1: Route B starter -> starter/<tag>/
+│   │   ├── run_switch.py         STEPS 2-3: the switch experiment
+│   │   ├── run_adaptive.py       STEP 4: multiscale
+│   │   ├── calibrate_rungs.py, flip_curve.py, mine_gate.py, handover_sweep.py
+│   │   └── rank_switch.py / rank_adaptive.py / rank_campaign.py   READERS
+│   ├── elastic_full_das/     ELASTIC (78x200 @ 45 m, F0=3 Hz) -- STEP 5
+│   │   ├── run_one.py, run_pipeline.py, run_traveltime_starter.py
+│   ├── standalone/           single runs incl. run_field_das.py (FORGE)
+│   ├── condor/               OrangeGrid (HTCondor). run_standalone.sh maps
+│   │                         kind -> script and is SCHEDULER-AGNOSTIC.
+│   ├── slurm/                Bridges-2. submit.sh / submit_array.sh /
+│   │                         activate_bridges2.sh (conda; DASFWI_ACTIVATE).
+│   └── check_progress.py     live progress + starter matrix verdict
+├── tests/                130 tests. conftest.py puts ADFWI on sys.path.
+└── results/              NOT in git. <campaign>/<tag>/{iter_vp,iter_loss,
+                          metrics.json,final.png}
+```
+
+**Conventions that matter if you touch this code:**
+- **Every driver must checkpoint** (~25 iterations) — a walltime kill otherwise
+  loses the whole cell. Sweep them all before any launch.
+- **Every knob that changes an experiment must be in the output tag**, or runs
+  overwrite each other. This class of bug has appeared four times.
+- **`--dry-run` validates config, `--smoke` validates execution.** Both are
+  required before submitting; dry-run exits before the loop.
+- Results are read by `rank_switch.py --rung {s6,s16,s20,routeb}`,
+  `rank_adaptive.py [--elastic]`, `check_progress.py`.
+
+---
+
 ## ⛔ PHASE-1 GATE RESULT (2026-07-29, Bridges-2, 90 cells) — READ FIRST
 
 **The L2→OT hypothesis below is REFUTED; the adaptive objective retargets to
