@@ -67,6 +67,10 @@ DASFWI/
 │   │                         ricker_f90, skip_threshold.
 │   ├── das_conditioning.py   Noe et al. conditioning: wavelength_span (lambda/4),
 │   │                         arrival_window, channel_weights, ConditionedMisfit.
+│   ├── das_qc.py             SITE-AGNOSTIC FIELD QC -- amplitude vs SHAPE
+│   │                         distortion. qc_das(gathers, dt) is the one call;
+│   │                         auto_band, spacing_is_adequate, recommended_settings,
+│   │                         format_report. RUN AT EVERY NEW SITE (see below).
 │   ├── starting_model.py     linear_vz, vs_from_vp (sqrt3), poisson_clamp.
 │   ├── safe_misfits.py       numerics-hardened misfit subclasses + apply_misfit.
 │   └── metrics.py            SSIM + MAPE (Liu's metrics).
@@ -105,6 +109,124 @@ DASFWI/
   required before submitting; dry-run exits before the loop.
 - Results are read by `rank_switch.py --rung {s6,s16,s20,routeb}`,
   `rank_adaptive.py [--elastic]`, `check_progress.py`.
+
+---
+
+## 🔎 STEP 0 AT EVERY FIELD SITE — DAS waveform-shape QC (mandatory)
+
+Before inverting **any** field DAS dataset, run `inversion/das_qc.py`. It answers
+the one question that changes the whole strategy, and it is the reason this
+method is transferable rather than FORGE-specific.
+
+| answer | meaning | what to do |
+|---|---|---|
+| **AMPLITUDE-ONLY** | coupling acts as a **scalar** | nothing new — per-trace normalisation (already on), channel weighting, `gc`/phase misfits are sound |
+| **SHAPE DISTORTION** (repeatable) | coupling acts as a **per-channel FILTER** | **no misfit choice fixes this.** Estimate the transfer function from the spectral ratios and deconvolve, or model coupling in the forward problem (Celli et al. 2024) |
+| shape mismatch, not repeatable | noise, not the fibre | channel weighting + arrival windowing suffice |
+| **INCONCLUSIVE** | the neighbour premise fails here | do **not** conclude distortion — retry with `n_neigh=1`, a lower band, or more shots |
+
+**Why it works anywhere:** channels are metres apart, wavelengths are ~100 m, so
+neighbours *must* agree. It needs only the observed gathers — no true model, no
+source wavelet, no second instrument. The decisive statistic is whether the
+ratio to neighbours is **flat** (a scalar) or **structured** (a filter), tested
+in *both* magnitude and phase:
+
+| # | test | catches |
+|---|---|---|
+| 1 | residual after xcorr alignment + normalisation | any shape difference |
+| 2 | spectral ratio `\|D_i(f)\|/median_j\|D_j(f)\|` — flat or tilted? | **magnitude** filtering |
+| 3 | repeatability across shots | separates the *fibre* from *noise* |
+| 4 | cross-spectrum **phase** — linear in f, or curved? | **dispersion** |
+
+**Test 4 is not redundant.** Test 2 sees only `|R(f)|`, so an **all-pass** filter
+— flat magnitude, curved phase — passes it while genuinely deforming the
+waveform, and dispersion is the one distortion a *phase* misfit cannot absorb
+either. Verified: on a synthetic all-pass case test 2 reports 0% tilt while
+test 4 flags it.
+
+> ⚠️ **Test 4's statistic must be SIGNED (curvature), never an RMS departure.**
+> The first version used RMS, which is unsigned and **saturates** — noise-driven
+> phase scatter then reads as "consistently ~0.5 rad in every shot" and passes a
+> std-below-magnitude repeatability test. It flipped **both FORGE wells to a
+> false SHAPE-DISTORTION verdict** (0.4975 / 0.5421 rad, ~50% of channels — the
+> median landing exactly on the threshold was the tell). Signing the statistic
+> drops FORGE to **0.0040 / 0.0046 rad**, a 125× fall, because random curvature
+> cancels in the median. Repeatability is likewise judged against the median's
+> **standard error**, so a handful of shots cannot fake consistency.
+> Pinned by `test_phase_noise_is_not_mistaken_for_dispersion`.
+
+**The deployment guard:** that premise can fail at a site with coarse channel
+spacing, strong scattering, or poor SNR — and a failed premise looks exactly
+like shape distortion. So it is *tested*, not assumed: the comparison is
+repeated in the bottom third of the band, where neighbour coherence is most
+strongly guaranteed. Disagreement there ⇒ **INCONCLUSIVE**, never a false alarm.
+
+Its threshold is **calibrated, not guessed** — low-band neighbour correlation
+measures 1.00 clean, 0.99 scalar, 0.99 magnitude-filtered, **0.69 severe
+dispersion**, **0.18 genuinely incoherent**. It must sit *below* what real
+distortion leaves and *above* incoherence, hence **0.40**. An initial 0.80
+silently downgraded true dispersion to "inconclusive", because severe distortion
+depresses this correlation too; `test_premise_threshold_separates_*` pins it.
+Note the *safe* failure direction: an extreme distortion that drove correlation
+under 0.40 would read "inconclusive — go look", never "clean".
+
+A second trap, also pinned: for incoherent traces the cross-spectrum phase is
+random, so its non-linearity **saturates in every shot** — large *and* stable,
+which mimics a repeatable filter. Test 4 therefore requires neighbour coherence
+(`corr > 0.3`) before it will call dispersion: you can only claim a waveform is
+deformed relative to its neighbours if there *is* a shared waveform. That gate
+sits between measured values (0.15 incoherent, 0.45 mildly dispersive) and
+**cannot be raised much** — at 0.5 the detection window closes completely,
+because by the time curvature clears 0.5 rad the correlation has already fallen
+below the gate.
+
+**Two limits worth knowing when reading the output**, both covered by tests
+rather than left implicit:
+- **Severe** dispersion destroys neighbour correlation outright, so it is
+  reported by test 1 as a shape mismatch (or by the guard as inconclusive)
+  rather than by test 4. It is never silently called clean.
+- A defect spanning a **contiguous run** of channels wider than the neighbour
+  window is invisible by construction — the reference is distorted too. Widen
+  `n_neigh`, or compare against a different fibre section.
+
+```bash
+# any site:  [S, nt, C] gathers in an .npz (band is measured if not given)
+python inversion/das_qc.py --npz site.npz --channel-spacing 4.0 --v-min 1800
+# FORGE:
+FORGE_DAS_DIR=/path/to/DAS_VSP python inversion/das_qc.py --well 78A-32 --shots 20
+```
+Also runs automatically inside `hpc/standalone/run_field_das.py`
+(`--qc on|off|strict`; `strict` **aborts** on shape distortion) and writes
+`das_qc.json` next to the results. Exit code 2 = shape distortion.
+Validated by `tests/test_das_qc.py` against six constructed cases whose answer is
+known analytically (clean / scalar / fixed magnitude filter / **all-pass
+dispersion** / shot-varying filter / incoherent channels), each checked with the
+premise guard both on and off.
+
+**MEASURED AT FORGE (2026-08-02, 20 shots/well): AMPLITUDE-ONLY, both wells —
+now on all four tests.**
+
+| | 78A-32 | 78B-32 |
+|---|---|---|
+| channels / shots | 1010 / 20 | 1206 / 20 |
+| neighbour correlation (median) | 0.954 | 0.954 |
+| spectral-ratio slope \|·\| | 0.023 | 0.018 |
+| **frac_spectral_tilt** (magnitude filtering) | **0.0%** | **0.0%** |
+| phase curvature, signed (median \|·\|) | 0.0040 rad | 0.0046 rad |
+| **frac_phase_nonlinear** (dispersion) | **0.4%** | **0.33%** |
+| shape mismatch | 4.4% | 1.2% |
+| premise low-band corr | 0.978 HOLDS | 0.979 HOLDS |
+| dead channels | 0 | 0 |
+
+Not one channel of **2216** shows a frequency-dependent *magnitude* ratio to its
+neighbours, and the *phase* curvature sits at 0.004 rad — indistinguishable from
+a clean synthetic (0.0016 rad) and ~125× below the 0.5 rad threshold. **Coupling
+at FORGE acts as a SCALAR, not a filter, in either magnitude or phase.**
+Consequence: phase-based misfits (`gc`, TF-phase) are sound here rather than a
+compromise; per-trace normalisation + channel weighting + `gc` suffice; no
+deconvolution and no Celli-style coupling modelling required. Neither published
+FORGE paper characterised this — Park never mentions coupling, Noe names it as a
+limitation without measuring it.
 
 ---
 

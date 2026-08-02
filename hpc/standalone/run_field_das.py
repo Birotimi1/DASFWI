@@ -139,6 +139,11 @@ def main():
                     help="starting model: blind 1-D gradient, or data-driven "
                          "first-break traveltime tomography")
     ap.add_argument("--smoke", action="store_true", help="2-iteration check")
+    ap.add_argument("--qc", default="on", choices=("on", "off", "strict"),
+                    help="DAS waveform-shape QC before inverting. 'strict' "
+                         "ABORTS if coupling is acting as a per-channel filter, "
+                         "because no misfit choice fixes that (see "
+                         "inversion/das_qc.py)")
     args = ap.parse_args()
 
     device = pick_device(args.device)
@@ -158,6 +163,33 @@ def main():
     print(summarize(bundle), flush=True)
     g = bundle["grid"]
     nz, nx = g["nz"], g["nx"]
+
+    # [3b] DAS QC -- AMPLITUDE distortion or SHAPE distortion? This runs on
+    # EVERY field site, not just FORGE, because the answer changes the strategy:
+    # amplitude-only is already handled by normalisation + gc, whereas a
+    # per-channel FILTER has to be deconvolved out and no misfit choice helps.
+    # It needs only the observed gathers, so it transfers anywhere.
+    if args.qc != "off":
+        from inversion.das_qc import qc_das, format_report, recommended_settings
+        obs_qc = np.asarray(bundle["obs_data"].data["strain_rate"])   # [S,nt,C]
+        qc = qc_das(obs_qc, g["dt"], channel_spacing=g["dz"],
+                    v_min=VP_BOUND[0])
+        print(format_report(qc), flush=True)
+        (out_dir / "das_qc.json").write_text(json.dumps(
+            {"well": args.well, **qc}, indent=2))
+        if qc["shape_distortion"]:
+            msg = ("DAS QC: coupling is acting as a per-channel FILTER "
+                   "(shape distortion). Per-trace normalisation and phase "
+                   "misfits do NOT correct this -- deconvolve the channel "
+                   "transfer functions or model coupling (Celli et al. 2024).")
+            if args.qc == "strict":
+                raise SystemExit("ABORT -- " + msg)
+            print("!!! WARNING -- " + msg, flush=True)
+        elif qc["inconclusive"]:
+            print("!!! DAS QC inconclusive -- see das_qc.json; proceeding with "
+                  "the conservative defaults.", flush=True)
+        print(f"    QC recommends: {recommended_settings(qc)['note']}",
+              flush=True)
 
     # [4] starting model. Default is a blind 1-D gradient; "traveltime" builds
     # a data-driven v(z) from first breaks of the nearest-offset shot (VSP
