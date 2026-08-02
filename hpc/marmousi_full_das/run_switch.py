@@ -338,6 +338,12 @@ def main():
             ladder_stages=(list(LADDER_STAGES) if args.arm == "ladder" else None),
             ladder_thresholds=(thr if args.arm == "ladder" else None),
             ssim=sc["ssim"], mape=sc["mape"],
+            # NLCG diverged to NaN while still exiting 0 with complete=true --
+            # without these a destroyed model enters the ranking as a result
+            losses_finite=bool(np.isfinite(iter_loss).all()) if len(iter_loss) else None,
+            model_finite=bool(np.isfinite(vp_final).all()),
+            diverged=bool(not np.isfinite(sc["ssim"])
+                          or not np.isfinite(vp_final).all()),
             rms_init=float(np.sqrt(((vp_init - vp_true) ** 2).mean())),
             rms_final=float(np.sqrt(((vp_final - vp_true) ** 2).mean())),
             trajectory=[dict(iter=i, skip=s, lam=l) for i, s, l in traj],

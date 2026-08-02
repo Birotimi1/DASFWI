@@ -33,7 +33,14 @@ def load(path):
     if not f.is_file():
         return None
     m = json.loads(f.read_text())
-    return m if m.get("complete", True) else None
+    if not m.get("complete", True):
+        return None
+    # A DIVERGED cell exits 0 with complete=true but holds NaN (NLCG did exactly
+    # this). Mark it so it is reported, not silently ranked among real results.
+    ss = m.get("ssim")
+    if m.get("diverged") or (isinstance(ss, float) and ss != ss):
+        m["_diverged"] = True
+    return m
 
 
 def rank_routeb(results):
@@ -58,6 +65,9 @@ def rank_routeb(results):
                                        ("g", m.get("grad_smooth") not in
                                              (None, "none", 0, 0.0)))
                        if on) or "-"
+        if m.get("_diverged"):
+            print(f"  {d.name:52s} *** DIVERGED (NaN) -- excluded ***")
+            continue
         cells.append((st, arm, m.get("optimizer", "?"), m.get("ssim", 0.0),
                       m.get("mape", 0.0), m.get("handbacks"), m.get("reentries"),
                       cond))
