@@ -218,7 +218,10 @@ def build_survey(geometry):
     return Survey(source, rcv)
 
 
-def build_gradient_processor():
+def build_gradient_processor(grad_smooth=0):
+    """grad_smooth is a span in CELLS passed to GradProcessor's smooth2d; use
+    inversion.das_conditioning.wavelength_span() for a frequency-aware lambda/4
+    value (Noe et al. 2025) instead of a hand-picked constant."""
     grad_mask = np.ones((NZ, NX))
     grad_mask[:GRAD_MASK_TOP, :] = 0
-    return GradProcessor(grad_mask=grad_mask)
+    return GradProcessor(grad_mask=grad_mask, grad_smooth=grad_smooth)

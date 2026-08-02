@@ -54,6 +54,7 @@ import matplotlib.pyplot as plt
 from ADFWI.fwi import AcousticFWI
 from inversion.metrics import model_scores
 from inversion.skip_diagnostic import skip_fraction, ricker_f90
+from inversion.das_conditioning import ConditionedMisfit, wavelength_span
 from inversion.adaptive_misfit import (BlendedMisfit, SkipSwitch,
                                        StagedMisfit, StageLadder,
                                        SKIP_ON_ABOVE, SKIP_OFF_BELOW,
@@ -122,6 +123,20 @@ def main():
                          f"for stages {'->'.join(LADDER_STAGES)})")
     ap.add_argument("--dwell", type=int, default=1,
                     help="minimum controller updates per mode (chunks)")
+    # --- Noe et al. 2025 conditioning (opt-in, so results stay comparable) ---
+    ap.add_argument("--window", action="store_true",
+                    help="keep only --window-pre/--window-post around each "
+                         "trace's peak (Noe use 2 s / 4 s). Also drops the LATE "
+                         "arrivals that carry the most phase error.")
+    ap.add_argument("--window-pre", type=float, default=2.0, dest="window_pre")
+    ap.add_argument("--window-post", type=float, default=4.0, dest="window_post")
+    ap.add_argument("--channel-weight", action="store_true", dest="channel_weight",
+                    help="weight channels by observed amplitude, so broadside-"
+                         "insensitive / poorly coupled ones do not dominate")
+    ap.add_argument("--grad-smooth", choices=("none", "wavelength"),
+                    default="none", dest="grad_smooth",
+                    help="wavelength = smooth the gradient at ~lambda/4 "
+                         "(frequency-aware) instead of leaving it unsmoothed")
     ap.add_argument("--device", default=None)
     ap.add_argument("--dry-run", action="store_true", dest="dry_run",
                     help="validate the plan and exit (no GPU, no data). RUN FIRST.")
@@ -141,7 +156,9 @@ def main():
     # overwrite each other -- the same collision already hit --timing and --bands
     _st = ("" if args.start == "rung"
            else "_" + _starter_file(args.starter).parent.name)
-    tag = f"{args.arm}{pair}_{args.optimizer}{_st}_{_b}"
+    _cond = ("" + ("w" if args.window else "") + ("c" if args.channel_weight else "")
+             + ("g" if args.grad_smooth != "none" else ""))
+    tag = f"{args.arm}{pair}_{args.optimizer}{_st}_{_b}" + (f"_{_cond}" if _cond else "")
     if args.smoke:
         tag = "smoke_" + tag
     _grp = "routeb" if args.start == "route_b" else args.start_rung
@@ -251,10 +268,20 @@ def main():
                                 lam=1.0, normalize=True)
         ladder, thr = None, None
     settings = MISFIT_RUN_SETTINGS[args.refiner]   # l2/gc/envelope all match
+    if args.window or args.channel_weight:
+        loss_fn = ConditionedMisfit(loss_fn, dt=DT, window=args.window,
+                                    weight=args.channel_weight,
+                                    window_pre=args.window_pre,
+                                    window_post=args.window_post)
+        print(f"    conditioning: window={args.window} "
+              f"({args.window_pre}s/{args.window_post}s) "
+              f"channel_weight={args.channel_weight}", flush=True)
 
     fwi = AcousticFWI(propagator=prop, model=model, optimizer=optimizer,
                       scheduler=scheduler, loss_fn=loss_fn, obs_data=obs_data,
-                      gradient_processor=build_gradient_processor(),
+                      gradient_processor=build_gradient_processor(
+                          grad_smooth=(wavelength_span(1500.0, f_eff, DX)
+                                       if args.grad_smooth == "wavelength" else 0)),
                       waveform_normalize=settings["normalize"],
                       cache_result=True, cache_result_epoch=10,
                       save_fig_epoch=-1,
