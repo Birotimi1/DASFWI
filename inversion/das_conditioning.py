@@ -97,8 +97,10 @@ class ConditionedMisfit(Misfit):
     """Applies Noe-style conditioning, then delegates to any inner misfit.
 
     Composes with everything: BlendedMisfit, StagedMisfit, or a plain misfit.
-    The window and weights are computed ONCE from the first observed gather seen
-    and then reused, so the objective does not change shape during the run.
+    The window and weights are derived from the OBSERVED gather on every call
+    (see _conditioning for why they are not cached), so the objective is fixed
+    with respect to the MODEL while still tracking whichever shots a batch
+    contains.
     """
 
     def __init__(self, inner, dt, window=None, weight=False,
@@ -111,7 +113,6 @@ class ConditionedMisfit(Misfit):
         self.window_pre, self.window_post = float(window_pre), float(window_post)
         self.weight_power = float(weight_power)
         self.time_axis = int(time_axis)
-        self._mask = None        # cached, derived from the OBSERVED gather
 
     @staticmethod
     def _obs_of(a, b):
@@ -123,8 +124,14 @@ class ConditionedMisfit(Misfit):
         return b
 
     def _conditioning(self, obs):
-        if self._mask is not None:
-            return self._mask
+        # Derived from obs EVERY call, deliberately not cached across calls.
+        # Caching looked like a cheap win but is wrong under shot batching: with
+        # batch_size < n_shots each call sees a DIFFERENT subset of shots, whose
+        # arrivals peak at different times, so a mask cached from the first batch
+        # would window every later batch at the wrong times. Recomputing is an
+        # argmax plus arithmetic -- negligible beside a wave propagation -- and
+        # the property that matters (the window never moves as the MODEL changes)
+        # comes from deriving it from obs, not from caching it.
         m = None
         if self.window:
             m = arrival_window(obs, self.dt, self.window_pre, self.window_post,
@@ -132,7 +139,6 @@ class ConditionedMisfit(Misfit):
         if self.weight:
             w = channel_weights(obs, self.time_axis, self.weight_power)
             m = w if m is None else m * w
-        self._mask = m
         return m
 
     def forward(self, a, b):

@@ -319,6 +319,16 @@ def main():
         metrics = dict(
             tag=tag, arm=args.arm, refiner=args.refiner, robust=args.robust,
             start=args.start, band=args.band, f_eff=f_eff,
+            # record the conditioning so a finished cell can be attributed from
+            # metrics.json alone, without parsing its directory name
+            starter=(args.starter or (_starter_file(None).parent.name
+                                      if args.start == "route_b" else None)),
+            window=bool(args.window), window_pre=args.window_pre,
+            window_post=args.window_post,
+            channel_weight=bool(args.channel_weight),
+            grad_smooth=args.grad_smooth,
+            grad_smooth_cells=(wavelength_span(1500.0, f_eff, DX)
+                               if args.grad_smooth == "wavelength" else 0.0),
             device=device, iterations=iterations,
             iterations_done=int(done), complete=bool(complete),
             runtime_h=round(hours, 3), optimizer=args.optimizer,

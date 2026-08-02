@@ -51,10 +51,16 @@ def rank_routeb(results):
         m = load(d)
         if not m or d.name.startswith("smoke_"):
             continue
-        st = next((s for s in starters if s in d.name), "?")
+        st = m.get("starter") or next((s for s in starters if s in d.name), "?")
         arm = d.name.split("_")[0]
+        cond = "".join(c for c, on in (("w", m.get("window")),
+                                       ("c", m.get("channel_weight")),
+                                       ("g", m.get("grad_smooth") not in
+                                             (None, "none", 0, 0.0)))
+                       if on) or "-"
         cells.append((st, arm, m.get("optimizer", "?"), m.get("ssim", 0.0),
-                      m.get("mape", 0.0), m.get("handbacks"), m.get("reentries")))
+                      m.get("mape", 0.0), m.get("handbacks"), m.get("reentries"),
+                      cond))
     if not cells:
         return print(f"no complete Route B cells in {root}")
     for st in sorted({c[0] for c in cells}):
@@ -62,25 +68,30 @@ def rank_routeb(results):
         print("=" * 74)
         print(f"ROUTE B  starter={st}   ({len(grp)} cells)")
         print("=" * 74)
-        print(f"{'arm':14s} {'optimizer':10s} {'SSIM':>6s} {'MAPE%':>7s} "
-              f"{'handovr':>8s} {'reentr':>7s}")
-        for _, arm, o, ss, mp, hb, re_ in sorted(grp, key=lambda c: -c[3]):
+        print(f"{'arm':14s} {'optimizer':10s} {'cond':>5s} {'SSIM':>6s} "
+              f"{'MAPE%':>7s} {'handovr':>8s} {'reentr':>7s}")
+        for _, arm, o, ss, mp, hb, re_, cond in sorted(grp, key=lambda c: -c[3]):
             flag = "  <-- REENTRY" if isinstance(re_, int) and re_ > 0 else ""
-            print(f"{arm:14s} {o:10s} {ss:6.3f} {mp:7.2f} "
+            print(f"{arm:14s} {o:10s} {cond:>5s} {ss:6.3f} {mp:7.2f} "
                   f"{str(hb if hb is not None else '-'):>8s} "
                   f"{str(re_ if re_ is not None else '-'):>7s}{flag}")
         # the comparison that matters: switch vs the l2 control, per optimizer
-        d_ = {(a, o): ss for _, a, o, ss, *_ in grp}
+        # key on (arm, optimizer, conditioning) so an A/B does not
+        # silently compare a conditioned arm against a plain control
+        d_ = {(a, o, c[-1]): ss for c in grp for _, a, o, ss in [c[:4]]}
         print("-" * 74)
         for o in sorted({c[2] for c in grp}):
-            l2 = d_.get(("l2", o))
+            l2 = d_.get(("l2", o, "-"))          # the PLAIN l2 control
             if l2 is None:
                 continue
-            for arm in ("switch", "switch-gc", "fixedk", "envelope"):
-                v = d_.get((arm, o))
+            for arm, cd in sorted({(c[1], c[7]) for c in grp}):
+                if arm == "l2" and cd == "-":
+                    continue
+                v = d_.get((arm, o, cd))
                 if v is None:
                     continue
-                print(f"  {o:8s} {arm:10s} {v:.3f} vs l2 {l2:.3f} -> "
+                print(f"  {o:8s} {arm + ('+' + cd if cd != '-' else ''):14s} "
+                      f"{v:.3f} vs l2 {l2:.3f} -> "
                       f"{'+' if v >= l2 else ''}{v - l2:.3f}"
                       + ("  BEATS L2" if v >= l2 + MARGIN else
                          "  ~= L2" if abs(v - l2) < MARGIN else "  loses"))

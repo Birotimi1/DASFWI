@@ -99,11 +99,13 @@ def test_conditioning_is_derived_from_obs_and_held_fixed():
     syn1 = _gather(shift=0.05).clone().requires_grad_(True)
     m = ConditionedMisfit(Misfit_waveform_L2(dt=DT), dt=DT, window=True,
                           window_pre=0.1, window_post=0.2)
-    m.forward(syn1, obs)
-    cached = m._mask.clone()
+    first = m._conditioning(obs).clone()
     syn2 = _gather(shift=0.9).clone().requires_grad_(True)   # very different model
     m.forward(syn2, obs)
-    assert torch.allclose(m._mask, cached)        # unchanged by the synthetic
+    assert torch.allclose(m._conditioning(obs), first)   # obs decides, not syn
+    # and a DIFFERENT batch of shots must get its OWN window, not the first one's
+    other = _gather(shift=0.6)
+    assert not torch.allclose(m._conditioning(other), first)
 
 
 def test_conditioning_off_is_a_no_op():
