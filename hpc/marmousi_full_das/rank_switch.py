@@ -13,7 +13,8 @@ import argparse
 import json
 from pathlib import Path
 
-RUNG_DIRS = {"s6": "", "s16": "ladder_s16", "s20": "ladder_s20"}
+RUNG_DIRS = {"s6": "", "s16": "ladder_s16", "s20": "ladder_s20",
+             "routeb": "switch_routeb"}
 OPTS = ("adam", "adagrad", "sgd", "adamw", "nadam")
 #: weci IS envelope->gc staged (Weci.py composes Misfit_envelope and
 #: Misfit_global_correlation), so all four of these are the meaningful controls:
@@ -35,6 +36,57 @@ def load(path):
     return m if m.get("complete", True) else None
 
 
+def rank_routeb(results):
+    """Route B results: step 2 (converged starter) and step 3 (partial starter)
+    share one directory and are told apart by the starter name in the tag. The
+    controls (l2 / envelope / fixedk) are IN the group -- there are no external
+    gate cells to compare against, because a Route B start has no rung."""
+    root = results / "switch_routeb"
+    if not root.is_dir():
+        return print(f"no Route B results in {root}")
+    starters = sorted({d.name for d in (results / "starter").glob("i*")}) \
+        if (results / "starter").is_dir() else []
+    cells = []
+    for d in sorted(root.iterdir()):
+        m = load(d)
+        if not m or d.name.startswith("smoke_"):
+            continue
+        st = next((s for s in starters if s in d.name), "?")
+        arm = d.name.split("_")[0]
+        cells.append((st, arm, m.get("optimizer", "?"), m.get("ssim", 0.0),
+                      m.get("mape", 0.0), m.get("handbacks"), m.get("reentries")))
+    if not cells:
+        return print(f"no complete Route B cells in {root}")
+    for st in sorted({c[0] for c in cells}):
+        grp = [c for c in cells if c[0] == st]
+        print("=" * 74)
+        print(f"ROUTE B  starter={st}   ({len(grp)} cells)")
+        print("=" * 74)
+        print(f"{'arm':14s} {'optimizer':10s} {'SSIM':>6s} {'MAPE%':>7s} "
+              f"{'handovr':>8s} {'reentr':>7s}")
+        for _, arm, o, ss, mp, hb, re_ in sorted(grp, key=lambda c: -c[3]):
+            flag = "  <-- REENTRY" if isinstance(re_, int) and re_ > 0 else ""
+            print(f"{arm:14s} {o:10s} {ss:6.3f} {mp:7.2f} "
+                  f"{str(hb if hb is not None else '-'):>8s} "
+                  f"{str(re_ if re_ is not None else '-'):>7s}{flag}")
+        # the comparison that matters: switch vs the l2 control, per optimizer
+        d_ = {(a, o): ss for _, a, o, ss, *_ in grp}
+        print("-" * 74)
+        for o in sorted({c[2] for c in grp}):
+            l2 = d_.get(("l2", o))
+            if l2 is None:
+                continue
+            for arm in ("switch", "switch-gc", "fixedk", "envelope"):
+                v = d_.get((arm, o))
+                if v is None:
+                    continue
+                print(f"  {o:8s} {arm:10s} {v:.3f} vs l2 {l2:.3f} -> "
+                      f"{'+' if v >= l2 else ''}{v - l2:.3f}"
+                      + ("  BEATS L2" if v >= l2 + MARGIN else
+                         "  ~= L2" if abs(v - l2) < MARGIN else "  loses"))
+        print()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rung", default="s16", choices=sorted(RUNG_DIRS))
@@ -42,6 +94,8 @@ def main():
     args = ap.parse_args()
     results = Path(args.results) if args.results else \
         Path(__file__).resolve().parents[2] / "results" / "marmousi_full_das"
+    if args.rung == "routeb":
+        return rank_routeb(results)
     gate = results / RUNG_DIRS[args.rung] if RUNG_DIRS[args.rung] else results
     switch = results / f"switch_{args.rung}"
 
