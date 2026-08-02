@@ -66,6 +66,7 @@ lower band; more stacking).
 """
 import argparse
 import json
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -203,7 +204,14 @@ def channel_report(gathers, dt, f_lo=5.0, f_hi=40.0, n_neigh=2, max_lag_s=0.02,
                 fvar = np.average((fb - fbar) ** 2, weights=w)
                 phase_nl[s, c] = quad * fvar          # rad, SIGNED
 
-    with np.errstate(invalid="ignore"):
+    # A channel with no usable measurement in ANY shot reduces over an all-NaN
+    # slice, which numpy warns about through `warnings` (not the FP error state,
+    # so errstate alone does not cover it). That case is expected and handled --
+    # `verdict` filters on np.isfinite -- and it is REAL: a site with a dead
+    # fibre section would otherwise print cryptic numpy warnings mid-run.
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.filterwarnings("ignore", r"(All-NaN|Degrees of freedom)",
+                                RuntimeWarning)
         return dict(
             n_shots=S, n_chan=C, f_lo=f_lo, f_hi=f_hi,
             resid_med=np.nanmedian(resid, axis=0),
