@@ -30,6 +30,7 @@ from ADFWI.fwi.regularization import (regularization_Tikhonov_1order,
                                       regularization_Tikhonov_2order,
                                       regularization_TV_1order,
                                       regularization_TV_2order)
+from ADFWI.fwi.optimizer import NLCG
 from inversion.safe_misfits import (SinkhornSafe, SdtwSafe, TravelTimeSafe,
                                     make_nim, ConvolvedWavefieldMisfit,
                                     GCMisfit64)
@@ -112,7 +113,7 @@ MISFIT_SETTINGS = {
 # ---------------------------------------------------------------------------
 # 2. OPTIMIZERS
 # ---------------------------------------------------------------------------
-OPTIMIZER_NAMES = ("sgd", "adagrad", "adam", "adamw", "nadam")
+OPTIMIZER_NAMES = ("sgd", "adagrad", "adam", "adamw", "nadam", "lbfgs", "nlcg")
 
 #: Liu's exact optimizer constructors (03-optimizer-test examples); fixed lr.
 #: Use these for the Liu-faithful campaign / standalone runs.
@@ -125,6 +126,19 @@ LIU_OPTIMIZERS = {
                                            weight_decay=1e-6),
     "nadam":   lambda p: torch.optim.NAdam(p, lr=10, betas=(0.9, 0.999),
                                            weight_decay=0, momentum_decay=4e-3),
+    # --- quasi-Newton / conjugate-gradient (the FWI-standard family) ----------
+    # Noe et al. 2025 (GJI) use trust-region L-BFGS for DAS FWI; every optimizer
+    # above is first-order. ADFWI's AcousticFWI already routes these through
+    # forward_closure() automatically (it isinstance-checks LBFGS/NLCG), so no
+    # driver change is needed. max_iter=1 keeps ONE outer step per iteration so
+    # the skip controller and our chunked checkpointing still line up; the
+    # strong-Wolfe line search sets the step length, which matters because a raw
+    # lr=10 Newton-like step on velocities (1500-4800 m/s) would be unstable.
+    # NOTE: ElasticFWI has NO closure path -- these are ACOUSTIC-only for now.
+    "lbfgs":   lambda p: torch.optim.LBFGS(p, lr=1.0, max_iter=1,
+                                           history_size=10,
+                                           line_search_fn="strong_wolfe"),
+    "nlcg":    lambda p: NLCG(p, method="PRP", line_search="Armijo", lr=1.0),
 }
 
 
