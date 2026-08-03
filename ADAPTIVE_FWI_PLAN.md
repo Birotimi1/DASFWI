@@ -17,7 +17,7 @@ This plan was designed in dialogue (Opus) and verified mathematically (Fable).
 | 2. Acoustic NON-SKIP (i300 starter) | ✅ l2 0.846 best; switch 0.842 correctly stays out of the way |
 | 3. Acoustic SKIP (i50 starter) | ✅ **switch 0.742 BEATS l2 0.616, at all four optimizers** (+0.075…+0.126) |
 | A. Conditioning A/B (32 cells) | ✅ done → **NEGATIVE**, and `c` has a real flaw (below) |
-| B. TF-phase | ✅ built + adjoint-verified; 12-cell campaign submitted |
+| B. TF-phase | ✅ done → **LOSES to our switch**; mechanism measured (below) |
 | **C. FORGE SYNTHETIC** | ⬅ **NEXT** (task #47; needs task #46 first) |
 | D. FORGE acoustic field | after C; runs **both** starters head-to-head |
 
@@ -50,6 +50,39 @@ FORGE because the source wavelet is unknown, so it is `gc`/`convsi`/`tfphase`.
   gutted it: `switch+c` collapsed 0.742→0.26 while `l2+c` was unharmed at 0.614.
   **Do not enable `c` with a nonlinear misfit until it weights contributions.**
 - **Multiscale "hurts" was an artefact** — see the bandwidth section below.
+
+### TF-phase result — our switch wins, and we know *why* it wins
+
+| | non-skip (i300) | **skip (i50)** |
+|---|---|---|
+| l2 | **0.846** | 0.616 |
+| **switch** (envelope→l2) | 0.842 | **0.742** |
+| switch **+tfphase** robust | 0.840 | **0.545–0.559** |
+| tfphase standalone | 0.697–0.741 | **0.365–0.438** |
+
+**Envelope remains the better robust stage** and the switch keeps its win.
+
+**Mechanism, measured rather than assumed.** `dφ = −ω·Δt` wraps at
+|Δt| > 1/(2f). Fichtner's weight is the envelope *amplitude*, which on a
+narrowband source peaks at the **source peak** — i.e. the highest,
+**first-to-wrap** rows. Fraction of total TF weight sitting on rows still
+unwrapped: 30 ms → 100%, 80 ms → 100%, **120 ms → 43.6%, 150 ms → 26.2%**. At
+the i50 starter `skip_fraction = 0.668`, so most traces exceed the 80 ms
+full-band T/2 — **TF-phase is reading mostly folded phase**, which is worse
+than useless because folded phase points the wrong way.
+
+Two coupled causes: only **6 Gabor rows exist** (1.06 octaves), *and* amplitude
+weighting starves the few unwrapped low rows. **Bandwidth is the root, the
+weighting is the amplifier.**
+
+> **Not a verdict on TF-phase in general.** Fichtner applies it to broadband
+> teleseismic data where most weight would sit on unwrapped rows. This is a
+> verdict on TF-phase with a **narrowband source under strong skip**.
+>
+> **Future work, genuinely novel:** make the TF weighting **skip-aware** —
+> down-weight rows whose wrap limit falls below the *measured* lag. We already
+> compute that distribution in `skip_diagnostic.trace_lags`, so it is cheap and
+> connects directly to the switch.
 
 ### The one fact that explains two "failures"
 **Marmousi is 1.06 octaves and GRID-CAPPED; FORGE field is 4.4.** Both
