@@ -83,12 +83,31 @@ data; **`c` stays OFF** until it weights contributions rather than data.
 1. **The source wavelet is UNKNOWN** — currently a placeholder Ricker at
    F0=15 Hz. `convsi` sidesteps it; anything else silently inherits a wrong
    wavelet.
-2. **No ground truth, so acceptance must be defined in advance (task #49).**
-   SSIM is meaningless. Available: data-residual reduction, our own
-   skip-fraction falling, comparison to Park's published Vp — and the
-   strongest, **cross-validating wells 78A-32 and 78B-32**, independent
-   datasets over shared geology whose models should agree where they overlap.
-   Disagreement is evidence of error requiring no truth at all.
+2. **Acceptance must be defined in advance (task #49) — and FORGE is NOT
+   truth-free, which I got wrong.** Park et al. validated VM0 (initial) vs VM3
+   (final) against **WELL LOGS**:
+   - **Borehole 58-32** — a *third* well, distinct from the DAS wells — carries
+     a **SONIC LOG (direct Vp)** plus **drill-cuttings density** ('B' bulk,
+     'M' matrix). Density defines zones **I / II / III = unconsolidated
+     alluvium / consolidated alluvium / GRANITOID BASEMENT**.
+   - **78B-32** carries a simplified **lithology log** marking the granitoid
+     transition.
+
+   So the primary test is: does recovered Vp reproduce the 58-32 sonic log, and
+   do the velocity boundaries line up with the I/II/III zone boundaries and the
+   granitoid transition? Secondary: data-residual reduction, our own
+   skip-fraction falling, and **cross-validating 78A-32 against 78B-32**
+   (independent data, shared geology → models should agree where they overlap).
+
+   > ⛔ **METHODOLOGICAL LINE.** Our mandate is Vp **and** Vs from DAS strain
+   > rate **alone**. Logs are **VALIDATION ONLY — never an inversion constraint
+   > and never a tuning target.** Sliding from "validate against the log" to
+   > "tune until it matches" would destroy the transferability claim, which is
+   > the entire point of the method. **Fix the acceptance thresholds before
+   > looking at the comparison.**
+
+   *First confirm we actually hold the 58-32 logs — the network share was
+   unreadable when checked.*
 
 ### Recurring failure modes — check these before every launch
 1. **Tag collisions — five occurrences.** Every knob that changes an experiment
