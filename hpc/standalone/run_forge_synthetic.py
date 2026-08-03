@@ -171,9 +171,13 @@ def main():
         nz, x_well_a=0.45 * SECTION_M, x_well_b=0.62 * SECTION_M,
         z_top=RELIEF_M + 100.0, n_channels=int(0.7 * nz), dz=DZ, dx=DX)))
     sx = np.linspace(0.05 * nx, 0.95 * nx, args.n_shots).astype(int)
-    # sources sit ON the ground, which the ramp makes depth-varying
-    src = vibroseis_line(NT, DT, args.f0_true, list(sx),
-                         int(np.median(ground) / DZ))
+    # Sources sit ON THE GROUND, per source. The ramp spans 16 grid rows, so a
+    # single median row buries 5 of 12 sources IN THE AIR -- they radiate into
+    # 340 m/s, the gather is empty, and skip_fraction returns NaN.
+    src_z_idx = np.clip((ground[sx] / DZ).astype(int), 0, nz - 1)
+    src = vibroseis_line(NT, DT, args.f0_true, list(sx), list(src_z_idx))
+    print(f"    {len(sx)} sources on the ground, rows "
+          f"{src_z_idx.min()}-{src_z_idx.max()}", flush=True)
 
     t_gen = time.time()
     if args.acoustic_data:
@@ -265,6 +269,13 @@ def main():
                 rec = prop.forward(checkpoint_segments=st["checkpoint_segments"])
                 syn = layer(rec["u"], rec["w"]).cpu()
             sk = float(skip_fraction(syn, obs_arr, DT, fb)["skip_fraction"])
+            if not np.isfinite(sk):
+                # A NaN measurement must NOT read as "no skip" -- that would
+                # hand straight to the refiner at a badly skipped start, which
+                # is the worst possible move. Fail SAFE: assume skipped.
+                print("  *** skip is NaN (empty synthetic?) -- assuming SKIPPED",
+                      flush=True)
+                sk = 1.0
             lam = (ctrl.update(sk) if arm == "switch" else
                    (1.0 if done < args.fixed_k else 0.0) if arm == "fixedk" else
                    (0.0 if arm in SOLO_ARMS else 1.0))

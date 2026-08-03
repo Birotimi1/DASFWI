@@ -147,12 +147,23 @@ def forge_fibers(nz, x_well_a=1000.0, x_well_b=1400.0, z_top=Z_AIR + 100.0,
 
 
 def vibroseis_line(nt, dt, f0, x_indices, z_index, amp0=1.0):
-    """Surface vibroseis line: one Ricker source per x index at z_index
-    (place z_index at/below the air-ground interface node z_air/dz)."""
+    """Surface vibroseis line: one Ricker source per x index.
+
+    `z_index` may be a SCALAR (flat surface) or one depth PER SOURCE. Under
+    topography the per-source form is required: with the measured FORGE ramp
+    (162 m over 2960 m) a single median row buries 5 of 12 sources in the AIR
+    layer, where they radiate at 340 m/s into nothing. The symptom is a NaN
+    skip fraction, because the synthetic gather is empty.
+    """
     src = Source(nt, dt, f0)
     wl = wavelet(nt, dt, f0, amp0=amp0)[1]
-    for ix in x_indices:
-        src.add_source(int(ix), int(z_index), wl)
+    zs = (np.full(len(x_indices), int(z_index)) if np.isscalar(z_index)
+          else np.asarray(z_index, int))
+    if len(zs) != len(x_indices):
+        raise ValueError(f"z_index must be scalar or one per source, got "
+                         f"{len(zs)} for {len(x_indices)} sources")
+    for ix, iz in zip(x_indices, zs):
+        src.add_source(int(ix), int(iz), wl)
     return src
 
 
