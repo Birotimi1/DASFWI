@@ -91,6 +91,22 @@ def channel_weights(obs, time_axis=1, power=1.0, floor=0.05, normalize=True):
 
     weight ~ (channel RMS)**power, floored so a dead channel contributes ~0 but
     never NaN, and normalised to mean 1 so the loss scale is unchanged.
+
+    >>> MEASURED WARNING -- DO NOT USE WITH A NON-QUADRATIC MISFIT AS-IS. <<<
+    These weights are applied to the DATA (see ConditionedMisfit.forward), but
+    Noe's intent is to weight each channel's CONTRIBUTION TO THE MISFIT. Those
+    coincide only for a quadratic misfit. Pushing scaled data through a
+    NONLINEAR misfit gives an uncontrolled effective exponent: measured on a
+    weak channel with w=0.066, its share of the misfit is scaled by 0.066 under
+    L2 but by 0.0003 under envelope^1.5 -- a 220x stronger suppression than
+    intended.
+
+    That is not academic. On the Bridges-2 A/B (2026-08-03) `switch+c` at the
+    SKIP starter collapsed from 0.742 to 0.26-0.30, while `l2+c` was unharmed
+    at 0.614: the switch's rescue IS its envelope stage, and weighting silently
+    gutted it. Fixing this properly means weighting per-channel misfit
+    contributions rather than the data -- which the black-box Misfit interface
+    cannot express without one forward call per channel.
     """
     o = obs if torch.is_tensor(obs) else torch.as_tensor(obs)
     rms = o.to(torch.float64).pow(2).mean(dim=time_axis, keepdim=True).sqrt()

@@ -211,3 +211,39 @@ def test_conditioning_does_not_hide_the_switch_api():
     # a genuinely missing attribute must still raise, not silently return None
     with pytest.raises(AttributeError):
         m.no_such_attribute
+
+
+def test_channel_weighting_distorts_a_nonlinear_misfit():
+    """REGRESSION for the A/B collapse (2026-08-03): switch+c fell 0.742 -> 0.26
+    at the skip starter while l2+c was unharmed at 0.614.
+
+    ConditionedMisfit weights the DATA, but the intent is to weight each
+    channel's CONTRIBUTION. Those agree only for a quadratic misfit; through a
+    nonlinear one the effective exponent is uncontrolled, so a weak channel is
+    suppressed far harder than asked. The switch's rescue IS its envelope stage,
+    so this quietly removed the rescue.
+
+    Pinned as a measured FACT so the asymmetry cannot be reintroduced unnoticed
+    and so any future per-channel-contribution fix has a target to beat."""
+    from ADFWI.fwi.misfit import Misfit_envelope
+
+    # float32 like the real pipeline: Misfit_envelope allocates a float32
+    # residual buffer, so a float64 fixture fails inside the misfit itself.
+    obs = _gather(weak=(3, 7)).float()
+    syn = _gather(shift=0.03, weak=(3, 7)).float()
+    w = channel_weights(obs)
+    wk = float(w[0, 0, 3])
+    assert wk < 0.2                                    # a genuinely weak channel
+
+    def share(M, ch):
+        plain = float(M.forward(syn[:, :, ch:ch + 1], obs[:, :, ch:ch + 1]))
+        wtd = float(M.forward((syn * w)[:, :, ch:ch + 1],
+                              (obs * w)[:, :, ch:ch + 1]))
+        return wtd / max(plain, 1e-30)
+
+    s_l2 = share(Misfit_waveform_L2(dt=DT), 3)
+    s_env = share(Misfit_envelope(dt=DT, p=1.5), 3)
+    # the envelope suppresses the SAME channel by orders of magnitude more
+    assert s_env < 0.05 * s_l2, (
+        f"expected the nonlinear misfit to over-suppress: l2 x{s_l2:.5f} vs "
+        f"envelope x{s_env:.5f}")
