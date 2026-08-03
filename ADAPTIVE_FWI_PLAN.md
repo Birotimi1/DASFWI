@@ -91,6 +91,41 @@ barely has. Do **not** propose "raise F0 on Marmousi": a 40 m grid resolves
 ~3.8 Hz at 10 ppw and f90 is already 6.25 Hz, so it needs dx≈2.5 m — ~256× cost
 and regenerating the observed data invalidates the whole board.
 
+### 📐 PARK'S FULL WORKFLOW — what it confirms, and one gap on our side
+
+**VM0 = Miller (2019)** → **INV1** traveltime tomography on *3D surface
+seismic* → **INV2** traveltime tomography on *2D DAS-VSP* → **VM2** →
+**INV3 = acoustic FWI** → **VM3**, validated against well logs.
+
+**1. They MANUALLY PICK first arrivals** — on both datasets. That is exactly
+what Route B (wave-equation xcorr, no picking) avoids, and it is the core of our
+transferability claim. Their eikonal stack — our documented fallback — is Noble
+et al. 2014 (hybrid plane-wave/spherical), Zhao 2004 (fast sweeping), Tong 2021
+(adjoint-state traveltime tomography, no ray tracing).
+
+**2. FWI misfit = global correlation norm** (Choi & Alkhalifah 2012), for
+"phase information… reducing sensitivity to amplitude mismatches"; gradients by
+adjoint-state (Plessix 2006). **No multiscale is mentioned in the methodology
+*or* the parameter passage** — two independent passages, both silent. Read as
+single-band, but confirm against the paper before publishing the claim.
+
+**3. ⚠️ TOPOGRAPHY — A GAP ON OUR SIDE (task #51).** Park: *"The inclined nature
+of the surface topography requires careful handling… we set the highest point of
+the model as depth 0 and incorporate an **AIR LAYER**."* We match the datum
+convention (`field_loader`: datum = max source elevation) **but have no air
+layer** — `VP_BOUND=(1500,6000)` and a flat `free_surface=True` make everything
+between the datum and the true ground surface **rock at ≥1500 m/s**. Every
+source below the highest then radiates through fictitious rock, and the
+inversion will absorb the error by **lowering near-surface velocities** —
+corrupting the shallow zone the DAS-VSP exists to constrain. **Measure the
+relief first**; if it is small relative to a wavelength this may be negligible.
+
+**4. How much prior information their VM2 carries:** a published regional model
++ 3D surface seismic + manual picks on two datasets. **Our Route B starter uses
+the DAS-VSP alone.** If we reach comparable quality from far less input, *that*
+is the result — and a fairer framing of our contribution than "our misfit is
+better".
+
 ### 🎯 PARK'S EXACT FWI SETUP — match it, then beat it fairly
 
 Their INV3: **10 m grid, dt 1 ms, 2 s record (nt = 2000), initial model VM2,
