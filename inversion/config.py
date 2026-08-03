@@ -65,7 +65,7 @@ def _envf(key):
     return float(v) if v not in (None, "") else None
 
 
-def build_misfit(name, dt, iterations, use_gc64=False):
+def build_misfit(name, dt, iterations, use_gc64=False, **kw):
     """Construct a misfit by name. `dt` is the propagator time step; `iterations`
     is the planned count (WECI needs it). `use_gc64=True` gives the dtype-safe
     float64 global-correlation subclass (for float64 tests); otherwise stock GC.
@@ -102,9 +102,10 @@ def build_misfit(name, dt, iterations, use_gc64=False):
         # with a known source band should pass them, since noise-only rows
         # contribute uniformly-distributed phase, i.e. variance and no signal.
         from inversion.tf_phase import Misfit_TFPhase
-        return Misfit_TFPhase(dt=dt, win_s=float(os.environ.get("DASFWI_TF_WIN", "1.0")),
-                              f_min=_envf("DASFWI_TF_FMIN"),
-                              f_max=_envf("DASFWI_TF_FMAX"))
+        return Misfit_TFPhase(
+            dt=dt, win_s=kw.pop("win_s", float(os.environ.get("DASFWI_TF_WIN", "1.0"))),
+            f_min=kw.pop("f_min", _envf("DASFWI_TF_FMIN")),
+            f_max=kw.pop("f_max", _envf("DASFWI_TF_FMAX")))
     if name == "convsi":
         return ConvolvedWavefieldMisfit(dt=dt)
     raise ValueError(f"unknown misfit {name!r}; choices {MISFITS}")

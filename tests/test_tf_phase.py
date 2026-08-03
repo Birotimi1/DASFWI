@@ -237,3 +237,42 @@ def test_registered_in_the_config_registry():
     assert "tfphase" in config.MISFIT_SETTINGS
     m = config.build_misfit("tfphase", dt=DT, iterations=300)
     assert isinstance(m, Misfit_TFPhase)
+
+
+def test_can_actually_drive_an_inversion():
+    """END-TO-END proxy: recover a KNOWN time shift by gradient descent.
+
+    Unit tests show the value and gradient are correct at a point; this shows
+    the misfit is usable as an OBJECTIVE -- that repeated steps converge rather
+    than stall or oscillate. A dry-run cannot catch this, and neither can a
+    single-point adjoint check. It is the cheap stand-in for the cluster smoke
+    test, and the 16-cell wipeout is what happens without one."""
+    true_shift = 0.006                       # < 1/(2*40Hz), so unwrapped
+    obs = _ricker(shift=true_shift)
+    m = _misfit()
+
+    # one free parameter: the shift applied to the synthetic, via a
+    # differentiable Fourier-domain delay so the gradient reaches it
+    delay = torch.zeros(1, dtype=torch.float64, requires_grad=True)
+    base = _ricker()
+    nt = base.shape[1]
+    f = torch.fft.rfftfreq(nt, DT).to(torch.float64)
+    opt = torch.optim.Adam([delay], lr=2e-3)
+
+    def shifted():
+        G = torch.fft.rfft(base, dim=1)
+        ph = torch.exp(-2j * np.pi * f * delay)[None, :, None]
+        return torch.fft.irfft(G * ph, n=nt, dim=1)
+
+    e0 = float(m.forward(shifted(), obs))
+    for _ in range(120):
+        opt.zero_grad()
+        loss = m.forward(shifted(), obs)
+        loss.backward()
+        assert torch.isfinite(delay.grad).all()
+        opt.step()
+    e1 = float(m.forward(shifted(), obs))
+
+    assert e1 < 0.05 * e0, f"misfit barely moved: {e0:.3e} -> {e1:.3e}"
+    assert float(delay) == pytest.approx(true_shift, abs=6e-4), \
+        f"recovered {float(delay):.5f} s, true {true_shift:.5f} s"

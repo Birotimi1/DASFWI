@@ -121,9 +121,13 @@ def pick_device(arg=None):
     return "cpu"
 
 
-def build_misfit(name, iterations=ITERATIONS):
-    """Misfit by name at the campaign dt (delegates to inversion.config)."""
-    return config.build_misfit(name, dt=DT, iterations=iterations)
+def build_misfit(name, iterations=ITERATIONS, **kw):
+    """Misfit by name at the campaign dt (delegates to inversion.config).
+
+    **kw reaches misfit-specific options -- tfphase takes f_min/f_max/win_s, so
+    a driver can restrict the Gabor plane to the band it is actually inverting.
+    """
+    return config.build_misfit(name, dt=DT, iterations=iterations, **kw)
 
 
 def build_regularization(name, device, dtype):

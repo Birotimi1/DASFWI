@@ -45,6 +45,7 @@ from common import (OUT_ROOT, OBS_FILE, ITERATIONS, NZ, NX, DX, DZ, DT, F0, NT,
                     DASObservationLayer, SeismicData, AcousticPropagator)
 
 import numpy as np
+import numpy as _np
 import torch
 
 import matplotlib
@@ -60,7 +61,14 @@ from inversion.adaptive_misfit import (BlendedMisfit, SkipSwitch,
                                        SKIP_ON_ABOVE, SKIP_OFF_BELOW,
                                        LADDER_THRESHOLDS)
 
-ARMS = ("switch", "fixedk", "ladder", "l2", "envelope")
+#: tfphase is a STANDALONE arm (the literature baseline our switch is measured
+#: against) and is also selectable as --refiner/--robust so it can be tested
+#: as a term INSIDE the switch.
+#: tfphase Gabor plane spans [TF_FMIN_FRAC*f_eff, f_eff]
+TF_FMIN_FRAC = 0.4
+ARMS = ("switch", "fixedk", "ladder", "l2", "envelope", "tfphase")
+#: arms that pin lambda=0, i.e. the refiner slot is the only term evaluated
+SOLO_REFINER_ARMS = ("l2", "tfphase")
 LADDER_STAGES = ("envelope", "gc", "l2")     # robust -> gentle -> sharp refiner
 
 
@@ -80,6 +88,35 @@ def _starter_file(name=None):
     return max(cands, key=_n)
 
 
+def _mk(name, iterations, f_eff):
+    """Build a misfit, giving tfphase the band ACTUALLY being inverted.
+
+    Rows of the Gabor plane outside the source band hold only numerical noise,
+    and noise phase is uniformly distributed -- pure variance, no signal. The
+    amplitude mask already suppresses them (measured: 2.2% of cells live at the
+    default full plane), but banding halves the cost and removes the few
+    out-of-band cells that survive the mask. f_lo is a fraction of f_eff rather
+    than 0 because the lowest rows have almost no energy in an integrated
+    Ricker and their phase is correspondingly noisy.
+    """
+    if name != "tfphase":
+        return build_misfit(name, iterations=iterations)
+    m = build_misfit(name, iterations=iterations,
+                     f_min=TF_FMIN_FRAC * f_eff, f_max=f_eff)
+    # REPORT the plane it actually got. Our source spans ~1 octave, so the
+    # banded plane is only ~6 rows wide at full band and 3-4 on a low band --
+    # TF-phase leans on unwrapped LOW rows, and there are barely any. Printed
+    # rather than assumed so a weak result can be attributed instead of guessed.
+    import torch as _t
+    _, _, _, freqs, _ = m._plan(NT, _t.device("cpu"), _t.float32)
+    print(f"    tfphase Gabor plane: {len(freqs)} rows over "
+          f"{TF_FMIN_FRAC * f_eff:.2f}-{f_eff:.2f} Hz "
+          f"(df={1.0 / (2 ** int(_np.ceil(_np.log2(max(8, m.win_s / m.dt)))) * m.dt):.2f} Hz)"
+          + ("   *** THIN: fewer than 5 rows, expect a weak/noisy phase estimate"
+             if len(freqs) < 5 else ""), flush=True)
+    return m
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", required=True, choices=ARMS)
@@ -89,9 +126,10 @@ def main():
     # (0.326) refines better than gc alone, so --refiner l2 is the proposal;
     # --refiner gc reproduces weci's exact pair under SKIP-DRIVEN timing, which
     # isolates timing (vs weci's hardcoded iteration-150 sigmoid) as the variable.
-    ap.add_argument("--refiner", default="l2", choices=("l2", "gc"),
+    ap.add_argument("--refiner", default="l2", choices=("l2", "gc", "tfphase"),
                     help="the resolution term handed over TO (lambda=0)")
-    ap.add_argument("--robust", default="envelope", choices=("envelope",),
+    ap.add_argument("--robust", default="envelope",
+                    choices=("envelope", "tfphase"),
                     help="the cycle-skip-tolerant term (lambda=1); stateless only")
     ap.add_argument("--optimizer", default="adam", choices=sorted(OPTIMIZERS))
     ap.add_argument("--starter", default=None,
@@ -149,7 +187,21 @@ def main():
     chunk = 2 if args.smoke else max(1, args.chunk)
     # encode the pair in the tag unless it is the default envelope->l2, so the
     # envelope->gc variant cannot overwrite the proposal's results
-    pair = "" if args.refiner == "l2" else f"-{args.refiner}"
+    # a solo arm IS its own refiner, so do not render "tfphase-tfphase"
+    if args.arm in SOLO_REFINER_ARMS and args.arm != "l2":
+        args.refiner = args.arm
+    pair = ("" if args.refiner == "l2" or args.refiner == args.arm
+            else f"-{args.refiner}")
+    # THE ROBUST TERM MUST BE IN THE TAG TOO. It was not, so
+    # `--arm switch --robust tfphase` and plain `--arm switch` both rendered
+    # "switch_adam_..." and the second run would have silently overwritten the
+    # first. Fifth occurrence of this bug class; caught by a dry-run this time
+    # rather than by confusing results. Only encoded for arms that actually
+    # EVALUATE the robust slot -- for a solo arm (lambda pinned to 0) it never
+    # runs, and tagging it would split identical results across two directories.
+    rb = ("" if args.robust == "envelope" or args.arm in SOLO_REFINER_ARMS
+          else f"+{args.robust}")
+    pair = pair + rb
     _b = "full" if args.band is None else f"{args.band:g}Hz"
     # the STARTER NAME must be in the tag: i20 and i80 are different experiments
     # (that is the whole point of the convergence axis) and would otherwise
@@ -198,6 +250,11 @@ def main():
     if args.dry_run:
         _f90 = ricker_f90(F0, DT, NT, integrated=True)
         _fe = _f90 if args.band is None else min(args.band, _f90)
+        # show the Gabor plane HERE too: the dry-run exists to surface problems
+        # before any SU is spent, and "only 3 usable frequency rows" is exactly
+        # such a problem. Reporting it only in the real run would be too late.
+        if "tfphase" in (args.refiner, args.robust):
+            _tf = _mk("tfphase", 2, _fe)
         print(f"    dry-run OK: arm={args.arm} {args.robust}->{args.refiner} "
               f"start={args.start}"
               + (f"({args.start_rung})" if args.start == "rung" else "")
@@ -263,8 +320,8 @@ def main():
         print(f"    ladder stages {'->'.join(LADDER_STAGES)} at skip {thr}",
               flush=True)
     else:
-        loss_fn = BlendedMisfit(build_misfit(args.refiner, iterations=iterations),
-                                build_misfit(args.robust, iterations=iterations),
+        loss_fn = BlendedMisfit(_mk(args.refiner, iterations, f_eff),
+                                _mk(args.robust, iterations, f_eff),
                                 lam=1.0, normalize=True)
         ladder, thr = None, None
     settings = MISFIT_RUN_SETTINGS[args.refiner]   # l2/gc/envelope all match
@@ -305,7 +362,7 @@ def main():
             return ctrl.update(skip)
         if args.arm == "fixedk":
             return 1.0 if done < args.fixed_k else 0.0
-        return 0.0 if args.arm == "l2" else 1.0
+        return 0.0 if args.arm in SOLO_REFINER_ARMS else 1.0
 
     traj = []                                 # (iter, skip, lam) per chunk
 
