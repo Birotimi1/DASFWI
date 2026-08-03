@@ -18,8 +18,28 @@ This plan was designed in dialogue (Opus) and verified mathematically (Fable).
 | 3. Acoustic SKIP (i50 starter) | ✅ **switch 0.742 BEATS l2 0.616, at all four optimizers** (+0.075…+0.126) |
 | A. Conditioning A/B (32 cells) | ✅ done → **NEGATIVE**, and `c` has a real flaw (below) |
 | B. TF-phase | ✅ done → **LOSES to our switch**; mechanism measured (below) |
-| **C. FORGE SYNTHETIC** | ⬅ **NEXT** (task #47; needs task #46 first) |
+| **C. FORGE SYNTHETIC** | ⬅ **NEXT** — all code prerequisites now DONE |
 | D. FORGE acoustic field | after C; runs **both** starters head-to-head |
+
+**CODE COMPLETE 2026-08-03 (195 tests pass).** Everything the FORGE work needs
+now exists:
+- `inversion/near_surface.py` — air layer, Park's 1000–6000 bounds, **anisotropic**
+  λ/4 smoothing (4:1 H:V). Tasks #51, #52.
+- `hpc/standalone/run_field_das.py` — **the switch**, **multiscale**
+  (`--bands`, `--iter-alloc`), **Route B** (`--starting route_b`), **`convsi`**
+  as a refiner. None of this existed before. Tasks #46, #48.
+- `forge/realistic_synthetic.py` — **elastic generation → acoustic inversion**,
+  noise, wavelet mismatch. The thing that makes our four "settled negatives"
+  re-testable.
+
+> ⚠️ **FOUR NEGATIVES ARE NOW SUSPECT, NOT SETTLED.** Windowing, channel
+> weighting, λ/4 smoothing and multiscale were all measured on
+> `proxy_model.generate_observed` data — an **inverse crime by its own
+> docstring** ("same propagator family, same operator, no noise"). They were
+> tested against data containing none of the errors they exist to remove. Those
+> results are valid about *synthetics* and invalid as guidance for the *field*.
+> Nothing is retracted yet — but the non-crime synthetic can now falsify them,
+> which it could not before. **Re-test before carrying any of them into FORGE.**
 
 **Headline result to protect:** 0.742 from a *deployable* Route B start beats
 0.664 obtained at s16 from a *smoothed-truth* start, at slightly harder skip.
