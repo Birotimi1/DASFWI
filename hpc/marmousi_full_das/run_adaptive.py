@@ -79,7 +79,40 @@ from inversion.skip_diagnostic import skip_fraction, ricker_f90
 
 #: placeholder flip point - REPLACE from the Phase-1 flip curve
 DEFAULT_FLIP_LO, DEFAULT_FLIP_HI = 3.0, 8.0
-DEFAULT_BANDS = "3.0,4.5,6.25,full"
+#: 3.0, 4.5, then unfiltered. NOT "...,6.25,full": the integrated Ricker at
+#: F0=5 has f90=6.25 Hz, so an explicit 6.25 band and `full` clamp to the SAME
+#: cutoff and invert identical data -- a quarter of the budget for nothing. The
+#: preflight now refuses that rather than printing a note nobody reads.
+DEFAULT_BANDS = "3.0,4.5,full"
+
+
+def allocate_iters(iters, n_bands, mode="equal"):
+    """Iterations PER BAND. Returns a list of length n_bands.
+
+    'equal'       -- iters for every band (the original behaviour).
+    'final-heavy' -- HALF the total to the final band, the rest split evenly
+                     below it.
+
+    Why 'final-heavy' exists, and why 'equal' quietly rigged the comparison:
+    the reported SSIM is measured at the TOP band, and the low bands only exist
+    to place the model in the right basin. With an equal split and 4 bands, a
+    multiscale run gets 25% of its budget at the resolution that sets its score,
+    while the single-scale control it is compared against gets 100% -- so the
+    cascade was charged for the low bands and never credited for them. Phase B's
+    "multiscale HURTS" (0.464 vs 0.626) was measured that way.
+    """
+    if mode == "equal":
+        return [iters] * n_bands
+    if mode != "final-heavy":
+        raise ValueError(f"unknown iter alloc {mode!r}")
+    total = iters * n_bands
+    if n_bands == 1:
+        return [total]
+    final = total // 2
+    rest, rem = divmod(total - final, n_bands - 1)
+    out = [rest] * (n_bands - 1) + [final]
+    out[-2] += rem                       # remainder to the highest LOW band
+    return out
 
 
 def parse_bands(spec):
@@ -118,7 +151,15 @@ def main():
     ap.add_argument("--optimizer", default="adam", choices=sorted(OPTIMIZERS))
     ap.add_argument("--bands", default=DEFAULT_BANDS,
                     help="comma-separated low-pass cut-offs, 'full' for unfiltered")
-    ap.add_argument("--iters", type=int, default=75, help="iterations PER BAND")
+    ap.add_argument("--iters", type=int, default=75, help="iterations PER BAND "
+                    "(with --iter-alloc final-heavy this sets the TOTAL as "
+                    "iters*n_bands, then reallocates)")
+    ap.add_argument("--iter-alloc", default="equal", dest="iter_alloc",
+                    choices=("equal", "final-heavy"),
+                    help="how to split the budget across bands. 'equal' gives "
+                         "the top band only 1/n of the budget while the "
+                         "single-scale control gets all of it -- which is how "
+                         "Phase B measured multiscale as harmful")
     ap.add_argument("--starter", default=None,
                     help="which Route B starter to use, e.g. i20 (partly "
                          "converged -> more skipping) or i80. Default: the only "
@@ -152,6 +193,7 @@ def main():
     dtype = torch.float32
     bands = parse_bands(args.bands)
     iters = 2 if args.smoke else args.iters
+    iters_by_band = allocate_iters(iters, len(bands), args.iter_alloc)
     obj = args.objective.lower()
     switch_mode = obj == "switch"
     adaptive = obj in ("adaptive", "switch")        # both use BlendedMisfit
@@ -164,6 +206,7 @@ def main():
     tag = (f"{tag}_{args.optimizer}_"
            + (_starter_file(args.starter).parent.name
               if args.start == "route_b" else args.start_rung)
+           + ("_fh" if args.iter_alloc == "final-heavy" else "")
            + ("_smoke" if args.smoke else ""))
     out_dir = OUT_ROOT / "adaptive" / tag
     problems = []
@@ -179,18 +222,24 @@ def main():
     if (out_dir / "metrics.json").is_file():
         print(f"    NOTE: {out_dir} already has results -- this OVERWRITES them",
               flush=True)
+    _f90 = ricker_f90(F0, DT, NT, integrated=True)
+    eff = [(_f90 if b is None else min(b, _f90)) for b in bands]
+    if len(set(eff)) != len(eff):
+        # was a NOTE, which nobody read: the DEFAULT ladder 3.0,4.5,6.25,full
+        # clamps `full` to f90=6.25, so two of four bands invert IDENTICAL data
+        # and a quarter of the budget is silently burnt. Refuse it.
+        problems.append(
+            f"duplicate effective bands {[round(e,2) for e in eff]} -- the "
+            f"source only reaches f90={_f90:.2f} Hz, so bands above it clamp "
+            f"and invert IDENTICAL data. Drop the redundant band(s).")
     for pb in problems:
         print(f"    *** {pb}", flush=True)
     if problems:
         raise SystemExit("preflight FAILED -- nothing was run")
     if args.dry_run:
-        _f90 = ricker_f90(F0, DT, NT, integrated=True)
-        eff = [(_f90 if b is None else min(b, _f90)) for b in bands]
-        if len(set(eff)) != len(eff):
-            print(f"    NOTE: duplicate effective bands {eff} (clamped at "
-                  f"f90={_f90:.2f} Hz) -- those bands invert identical data")
         print(f"    dry-run OK: objective={args.objective} bands={bands} "
-              f"(f_eff={[round(e,2) for e in eff]}) x {iters} iters")
+              f"(f_eff={[round(e,2) for e in eff]}) "
+              f"iters/band={iters_by_band} total={sum(iters_by_band)}")
         return
     out_dir.mkdir(parents=True, exist_ok=True)
     f90 = ricker_f90(F0, DT, NT, integrated=True)
@@ -272,8 +321,9 @@ def main():
             tag=tag, objective=args.objective, optimizer=args.optimizer,
             start_rung=args.start_rung,
             bands=[("full" if b is None else b) for b in bands],
-            iters_per_band=iters, adaptive=adaptive,
-            iterations=iters * len(bands), iterations_done=int(start),
+            iters_per_band=list(iters_by_band), iter_alloc=args.iter_alloc,
+            adaptive=adaptive,
+            iterations=sum(iters_by_band), iterations_done=int(start),
             complete=bool(complete),
             flip_lo=args.flip_lo if adaptive else None,
             flip_hi=args.flip_hi if adaptive else None,
@@ -290,6 +340,7 @@ def main():
         return vp_final, iter_loss, m
     for bi, f_band in enumerate(bands):
         f_eff = f90 if f_band is None else min(f_band, f90)
+        band_iters = iters_by_band[bi]
 
         def _skip():
             try:
@@ -302,19 +353,19 @@ def main():
         # robust mode -- one persistent switch's hand-back ratchet would block it.
         ctrl = SkipSwitch(on_above=args.on_above, off_below=args.off_below,
                           dwell=args.dwell,
-                          max_robust=max(1, -(-iters // max(1, args.chunk)))
+                          max_robust=max(1, -(-band_iters // max(1, args.chunk)))
                           ) if switch_mode else None
         sk0 = _skip()
-        print(f"--- band {bi+1}/{len(bands)}: cutoff="
+        print(f"--- band {bi+1}/{len(bands)} [{band_iters} iters]: cutoff="
               f"{'full' if f_band is None else f'{f_band} Hz'} "
               f"(f_eff={f_eff:.2f}, T/2={1000/(2*f_eff):.0f} ms) "
               f"skip@start={sk0:.3f} ---", flush=True)
 
         # switch mode steps the controller every --chunk iterations; the other
         # arms set lambda once per band, so one call is equivalent.
-        chunk = args.chunk if switch_mode else iters
+        chunk = args.chunk if switch_mode else band_iters
         done_in_band, lam, traj = 0, None, []
-        while done_in_band < iters:
+        while done_in_band < band_iters:
             sk = sk0 if done_in_band == 0 else _skip()
             if switch_mode:
                 lam = ctrl.update(sk)
@@ -327,7 +378,7 @@ def main():
                 loss_fn.set_lambda(lam)
             traj.append(dict(iter=done_in_band, skip=float(sk),
                              lam=(None if lam is None else float(lam))))
-            n = min(chunk, iters - done_in_band)
+            n = min(chunk, band_iters - done_in_band)
             fwi.forward(iteration=n, batch_size=settings["batch_size"],
                         checkpoint_segments=settings["checkpoint_segments"],
                         start_iter=start, cutoff_freq=f_band)
@@ -353,7 +404,7 @@ def main():
         fig.colorbar(im, ax=ax, shrink=0.8)
     axes.flat[3].plot(iter_loss, "k.-", ms=3)
     for bi in range(1, len(bands)):
-        axes.flat[3].axvline(bi * iters, color="r", ls="--", lw=.8)
+        axes.flat[3].axvline(sum(iters_by_band[:bi]), color="r", ls="--", lw=.8)
     axes.flat[3].set(title="loss (red = band change)", xlabel="iteration")
     fig.savefig(out_dir / "final.png", dpi=150)
     print("saved results to", out_dir, flush=True)
