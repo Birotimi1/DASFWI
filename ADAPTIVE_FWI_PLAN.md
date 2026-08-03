@@ -130,12 +130,32 @@ transfer (see the retraction below). FORGE is the first dataset where the
 cascade and the switch might be complementary rather than redundant, since the
 switch measures skip *per band*.
 
-**Acoustic FORGE recipe.** Misfit: `l2` is OUT — it needs a known wavelet and
-trustworthy amplitudes and FORGE has neither. Use `convsi` (source-independent
-by construction), `gc` (amplitude-insensitive, Park's choice), or `tfphase`
-(phase-only; our QC showed coupling there is a *scalar*, so this is sound
-rather than a compromise). Conditioning: `w` and `g` are defensible on real
-data; **`c` stays OFF** until it weights contributions rather than data.
+**Acoustic FORGE recipe — and an inconsistency I had to correct.** I wrote
+"`l2` is OUT at FORGE". **That was too strong**: Park *did* invert with an
+**assumed** 10 Hz Ricker and it produced VM3. The accurate statement is that L2
+fits amplitude *and* phase, so a wrong wavelet is **absorbed into the velocity
+model** with nothing flagging it — a vulnerability, not an impossibility.
+
+> ⛔ **THE TRANSFER GAP THIS EXPOSES (task #50).** Our headline result uses the
+> **L2 refiner** (`envelope → l2`, 0.742). The obvious substitute **loses on
+> Marmousi** (`switch-gc` 0.585), and the principled one — **`convsi`,
+> source-independent — has never been tested as a refiner and is not even in
+> `--refiner` choices** (`l2`, `gc`, `tfphase`). So "the switch wins" and "L2 is
+> questionable at FORGE" cannot both stand unexamined: the *specific winning
+> configuration* rests on the misfit whose FORGE validity is in doubt.
+>
+> **Decide it by experiment, on the FORGE synthetic, where we control the
+> wavelet AND have truth:** generate with a true wavelet, invert with a
+> deliberately wrong one (Park's 10 Hz Ricker), compare `l2`/`gc`/`convsi`
+> refiners ± the switch, and quantify the velocity error. Include a
+> correct-wavelet control to separate wavelet error from everything else.
+> Publishable on its own: Park assumed a Ricker and never tested the sensitivity.
+> *Watch out:* `convsi` runs with `batch_size=2, checkpoint_segments=2,
+> normalize=False` — unlike `l2`/`gc` — so the switch's gradient-norm
+> normalisation and run settings must be **checked, not assumed**.
+
+Conditioning: `w` and `g` are defensible on real data; **`c` stays OFF** until
+it weights contributions rather than data.
 
 **Two real risks, both bigger than the misfit choice:**
 1. **The source wavelet is UNKNOWN** — currently a placeholder Ricker at
