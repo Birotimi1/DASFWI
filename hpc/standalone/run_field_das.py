@@ -175,8 +175,13 @@ def _route_b_starter(bundle, g, nz, nx, device, iters, optimizer_name):
     p0 = AcousticPropagator(m0, bundle["survey"], device=device,
                             dtype=torch.float32)
     opt0 = OPTIMIZERS[optimizer_name](m0.parameters())
+    # AcousticFWI.forward calls scheduler.step() UNCONDITIONALLY, so
+    # scheduler=None raises AttributeError on the very first iteration. Caught
+    # by the end-to-end integration test, not by any unit test -- the starter
+    # would have crashed the moment it ran on the cluster.
+    sch0 = torch.optim.lr_scheduler.StepLR(opt0, step_size=10 ** 9, gamma=1.0)
     st = RUN_SETTINGS["gc"]
-    f0 = AcousticFWI(propagator=p0, model=m0, optimizer=opt0, scheduler=None,
+    f0 = AcousticFWI(propagator=p0, model=m0, optimizer=opt0, scheduler=sch0,
                      loss_fn=build_misfit("gc", iters, g["dt"]),
                      obs_data=bundle["obs_data"],
                      gradient_processor=GradProcessor(),
