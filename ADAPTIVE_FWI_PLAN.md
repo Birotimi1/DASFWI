@@ -1,9 +1,77 @@
 # Adaptive Frequency-Continuous DAS-FWI — Research Plan
 
-**Status (2026-07-23):** Marmousi elastic A/B campaign running (Phase 0). When it
-finishes we begin **Phase 1: the cycle-skipping flip test** — the hypothesis gate
-for everything below. This plan was designed in dialogue (Opus) and verified
-mathematically (Fable); Fable's four amendments are folded in.
+**Status (2026-08-03).** Acoustic Route B steps 1–3 **PASSED**. Conditioning A/B
+**done → negative**. TF-phase **built, adjoint-verified, campaign submitted**.
+**Next: FORGE SYNTHETIC (step C), then FORGE acoustic field (step D).**
+This plan was designed in dialogue (Opus) and verified mathematically (Fable).
+
+---
+
+## 🔁 SESSION HANDOFF — READ THIS FIRST IF YOU ARE PICKING THIS UP COLD
+
+### Where we are
+
+| step | state |
+|---|---|
+| 1. Acoustic Route B starter | ✅ `gc_adam` wins (skip 0.544→0.439). NOT traveltime. |
+| 2. Acoustic NON-SKIP (i300 starter) | ✅ l2 0.846 best; switch 0.842 correctly stays out of the way |
+| 3. Acoustic SKIP (i50 starter) | ✅ **switch 0.742 BEATS l2 0.616, at all four optimizers** (+0.075…+0.126) |
+| A. Conditioning A/B (32 cells) | ✅ done → **NEGATIVE**, and `c` has a real flaw (below) |
+| B. TF-phase | ✅ built + adjoint-verified; 12-cell campaign submitted |
+| **C. FORGE SYNTHETIC** | ⬅ **NEXT** (task #47; needs task #46 first) |
+| D. FORGE acoustic field | after C; runs **both** starters head-to-head |
+
+**Headline result to protect:** 0.742 from a *deployable* Route B start beats
+0.664 obtained at s16 from a *smoothed-truth* start, at slightly harder skip.
+The starting model we can actually build in the field outperformed the
+truth-derived one.
+
+### Why FORGE synthetic before FORGE field — do not skip it
+Field FWI has **no ground truth**. A wrong geometry projection, E3 operator,
+starter port or misfit choice yields a plausible model with nothing to flag it.
+The synthetic proxy is the only place those fail loudly. It also validates the
+Route B starter port (task #46, a prerequisite for D anyway), tests multiscale
+where bandwidth exists, and picks the field misfit — `l2` is unavailable at
+FORGE because the source wavelet is unknown, so it is `gc`/`convsi`/`tfphase`.
+
+### Settled NEGATIVES — do not re-run, do not re-propose
+- **L-BFGS and NLCG diverge to NaN.** Both line-search; the batched gradient is
+  stochastic so Wolfe/Armijo conditions are evaluated on noise. ~54 SU burned.
+  *(Consequence: the missing `ElasticFWI` closure path is now moot.)*
+- **Noe conditioning does not help on synthetics.** Best cell +0.003 (noise);
+  `g` costs ~0.13 everywhere. **But this is inverse-crime data** — no noise,
+  perfect amplitudes — which is precisely what Noe's steps exist to fix, so it
+  does **not** settle the field case.
+- **`c` (channel weighting) has a REAL FLAW, and it applies at FORGE too.**
+  `ConditionedMisfit` weights the *data*; the intent is to weight each channel's
+  *contribution*. Equivalent only for a **quadratic** misfit. Measured: a weak
+  channel (w=0.066) is scaled by 0.066 under L2 but **0.0003 under
+  envelope^1.5 — 220×**. The switch's rescue *is* its envelope stage, so `c`
+  gutted it: `switch+c` collapsed 0.742→0.26 while `l2+c` was unharmed at 0.614.
+  **Do not enable `c` with a nonlinear misfit until it weights contributions.**
+- **Multiscale "hurts" was an artefact** — see the bandwidth section below.
+
+### The one fact that explains two "failures"
+**Marmousi is 1.06 octaves and GRID-CAPPED; FORGE field is 4.4.** Both
+multiscale and TF-phase depend on low-frequency content that our synthetic
+barely has. Do **not** propose "raise F0 on Marmousi": a 40 m grid resolves
+~3.8 Hz at 10 ppw and f90 is already 6.25 Hz, so it needs dx≈2.5 m — ~256× cost
+and regenerating the observed data invalidates the whole board.
+
+### Recurring failure modes — check these before every launch
+1. **Tag collisions — five occurrences.** Every knob that changes an experiment
+   must be in the output tag. Verify tags are distinct *and* don't collide with
+   the existing board before submitting.
+2. **`--dry-run` cannot catch runtime errors.** It exits before the loop. The
+   16-cell conditioning wipeout was two runtime bugs. **Always smoke.**
+3. **Smoke must cover every distinct code path.** Every non-ladder arm builds a
+   `BlendedMisfit`, so `l2` drives `set_lambda` too — smoking only `switch`
+   left half the campaign unverified.
+4. **A job that exits 0 is not a job that worked.** Check `metrics.json` exists
+   *and* its contents (`losses_finite`, `diverged`, the recorded terms).
+5. **zsh does not word-split unquoted `$var`** — has produced false failures in
+   my own test harnesses three times. Use `${=var}` or explicit invocations.
+6. **The scratch repo gets purged** — see the restore section at the bottom.
 
 ---
 
@@ -36,9 +104,20 @@ it — move to an **eikonal solver**. Park et al. (2025) use manual picks + a
 hybrid eikonal solver at this exact site.
 
 **Settled — do not re-run:** the acoustic switch on smoothed-truth rungs (60
-cells, s6/s16/s20, 5 optimizers — switch wins everywhere); acoustic multiscale
-(NEGATIVE, the cascade hurts); the elastic regression (0.583/0.702, reproduces
-the campaign — code validated).
+cells, s6/s16/s20, 5 optimizers — switch wins everywhere); the elastic
+regression (0.583/0.702, reproduces the campaign — code validated).
+
+> ⚠️ **RETRACTED 2026-08-03:** this list used to say *"acoustic multiscale
+> (NEGATIVE, the cascade hurts)"*. **That was an artefact of the setup, not a
+> property of frequency continuation**, and it was repeated as settled for over
+> a week. Two causes, both fixed: the default ladder `3.0,4.5,6.25,full`
+> clamped two bands to the same 6.25 Hz (a quarter of the budget inverting
+> identical data — the code printed a NOTE nobody read; preflight now refuses
+> it), and `--iters` was per band with an **equal** split, so the cascade got
+> 75 iterations at the band that sets the score while the single-scale control
+> got 300 (`--iter-alloc final-heavy` fixes this). Underneath both: **Marmousi
+> is 1.06 octaves**, so it cannot test a cascade at all. The real test is the
+> FORGE synthetic / field, at 4.4 octaves.
 
 **Before any HPC submission:** `--dry-run` (config) **then** `--smoke`
 (execution). Both are required — `--dry-run` exits before the iteration loop and
@@ -67,6 +146,9 @@ DASFWI/
 │   │                         ricker_f90, skip_threshold.
 │   ├── das_conditioning.py   Noe et al. conditioning: wavelength_span (lambda/4),
 │   │                         arrival_window, channel_weights, ConditionedMisfit.
+│   ├── tf_phase.py           Fichtner TF-PHASE misfit (Gabor plane, phase only).
+│   │                         Registered as "tfphase"; ADJOINT-VERIFIED against
+│   │                         finite differences before it was allowed to score.
 │   ├── das_qc.py             SITE-AGNOSTIC FIELD QC -- amplitude vs SHAPE
 │   │                         distortion. qc_das(gathers, dt) is the one call;
 │   │                         auto_band, spacing_is_adequate, recommended_settings,
@@ -600,3 +682,54 @@ OT when the skip diagnostic says the model is well aligned.
 > The discipline that matters most: Phase 1 is a hypothesis test about strain-rate
 > objectives (NIM's divergence is the standing reminder that OT-family behavior on
 > this observable is not free). Nothing downstream is built until the flip curve exists.
+
+---
+
+## 🛟 RESTORING THE WORKING TREE AFTER IT GETS DELETED
+
+**This has happened three times.** The local copy lives under `/private/tmp/`,
+which **macOS purges by age**, so tracked files and loose git objects vanish
+while `HEAD` stays intact. The first two occurrences were misdiagnosed as "git
+corruption". On 2026-08-03 it took **180 tracked files** and 5 git objects.
+Tell-tale sign: the files that *survive* are the ones edited that same day.
+
+> ### ⛔ THE DANGER
+> `git add -A && git commit` in that state **commits 180 deletions**, and
+> pushing **wipes the cluster repo on its next pull**. This has bitten the
+> project before.
+>
+> **RULE: before any `git add -A`, run `git ls-files -d | wc -l`.
+> If it is non-zero, STOP and restore — do not stage.**
+
+```bash
+cd <repo>
+# 1. diagnose
+git status --porcelain | awk '{print substr($0,1,2)}' | sort | uniq -c
+git ls-files -d | wc -l                          # deleted — want these back
+git diff --name-only --diff-filter=M | wc -l     # MUST be 0 for a lossless restore
+
+# 2. restore ONLY the deleted paths. By construction this cannot clobber a
+#    modified file — unlike `git restore .`, which is tree-wide and is (rightly)
+#    blocked by Claude Code's auto-mode classifier as irreversible destruction.
+git ls-files -d -z | xargs -0 git restore --
+
+# 3. if it errors "unable to read sha1 file", the OBJECT STORE is damaged too:
+git fetch --refetch origin                       # redownload all objects
+git ls-files -d -z | xargs -0 git restore --     # then retry
+
+# 4. VERIFY — do not assume
+[ -z "$(git diff --name-only origin/main)" ] && echo "IDENTICAL to origin/main"
+git ls-files | while IFS= read -r f; do [ -e "$f" ] || echo "MISSING $f"; done
+python -m pytest tests/ -q | tail -2             # functional proof
+```
+
+Leftover `git fsck` complaints about the reflog or a pack index afterwards are
+**cosmetic** — content correctness is proven by the `origin/main` diff being
+empty. Not worth re-cloning.
+
+**Why nothing is ever actually lost:** every change is committed and pushed to
+`origin/main` immediately. **The scratch copy is disposable**; GitHub and the
+Bridges-2 checkout (`/ocean/projects/ees260010p/brotimi/DASFWI`) are
+authoritative, and the cluster clone is unaffected by this. That push habit is
+what makes this a two-minute recovery instead of a lost day.
+
