@@ -144,7 +144,10 @@ def main():
     # EVERY knob in the tag: this bug class has struck five times.
     pair = "" if args.refiner in ("l2", arm) else f"-{args.refiner}"
     rb = "" if args.robust == "envelope" or arm in SOLO_ARMS else f"+{args.robust}"
-    tag = ("fsyn_" + arm + pair + rb + "_" + args.optimizer
+    # iterations MUST be tagged: the Park-matched 30-iteration cells and the
+    # 150-iteration cells are DIFFERENT experiments and were writing to one
+    # directory. Caught by the campaign's tag-uniqueness check, not by review.
+    tag = ("fsyn_" + arm + pair + rb + "_" + args.optimizer + f"_i{iterations}"
            + (f"_w{args.f0_true:g}-{f0_asm:g}" if f0_asm != args.f0_true
               else f"_w{args.f0_true:g}")
            + f"_snr{args.snr:g}"

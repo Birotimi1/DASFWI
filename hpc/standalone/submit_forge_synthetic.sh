@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# FORGE SYNTHETIC campaign -- 14 cells on the deadline path to an acoustic result.
+# FORGE SYNTHETIC campaign -- 11 cells on the deadline path to an acoustic result.
 #
 #   hpc/standalone/submit_forge_synthetic.sh --list      # print, run nothing
-#   hpc/standalone/submit_forge_synthetic.sh --dry-run   # validate all 14, no GPU
+#   hpc/standalone/submit_forge_synthetic.sh --dry-run   # validate all 11, no GPU
 #   hpc/standalone/submit_forge_synthetic.sh --smoke     # 3 GPU jobs, ~1 SU
-#   hpc/standalone/submit_forge_synthetic.sh             # submit all 14
+#   hpc/standalone/submit_forge_synthetic.sh             # submit all 11
 #
 # RUN IN THAT ORDER. --dry-run validates configuration and exits before the
 # loop; only --smoke actually executes. Assembling and running this pipeline
@@ -31,7 +31,9 @@
 #   3  PARK-MATCH  their setup: gc, 30 iterations, single band              2
 #
 # COST: ~8 SU/cell at 150 iterations (10 m, nt=2000 = 12.7x a Marmousi cell),
-# ~0.8 SU for the 30-iteration Park cells. Total ~50 SU.
+# ~0.8 SU for the 30-iteration Park cells. Total ~40 SU.
+# NOTE: this is a BASH script. `$a` splits on whitespace here; the zsh-only
+# `${=a}` form is a syntax error under bash and has tripped me up repeatedly.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"; cd "$REPO"
@@ -57,24 +59,24 @@ check_fixes() {
 
 # stage | args
 cells() {
+# One cell per DISTINCT configuration. Several serve more than one stage --
+# `switch-gc @150` is simultaneously the sanity check, the matched-wavelet gc
+# arm, and the single-scale control for multiscale -- so running it once and
+# reading it three times is correct, not a gap. 11 cells, not 14.
 cat <<'EOF'
-0-sanity|--arm gc --iterations 150
-0-sanity|--arm switch --refiner gc --iterations 150
-1-wavelet|--arm switch --refiner l2 --f0-true 10 --iterations 150
-1-wavelet|--arm switch --refiner l2 --f0-true 14 --f0-assumed 10 --iterations 150
-1-wavelet|--arm switch --refiner gc --f0-true 10 --iterations 150
-1-wavelet|--arm switch --refiner gc --f0-true 14 --f0-assumed 10 --iterations 150
-1-wavelet|--arm switch --refiner convsi --f0-true 10 --iterations 150
-1-wavelet|--arm switch --refiner convsi --f0-true 14 --f0-assumed 10 --iterations 150
-2-multiscale|--arm gc --iterations 150
-2-multiscale|--arm gc --bands 5,8,12,full --iterations 150
-2-multiscale|--arm switch --refiner gc --iterations 150
-2-multiscale|--arm switch --refiner gc --bands 5,8,12,full --iterations 150
-3-parkmatch|--arm gc --iterations 30
-3-parkmatch|--arm switch --refiner gc --iterations 30
+0,1,2|--arm switch --refiner gc --f0-true 10 --iterations 150
+0,2|--arm gc --iterations 150
+1|--arm switch --refiner l2 --f0-true 10 --iterations 150
+1|--arm switch --refiner l2 --f0-true 14 --f0-assumed 10 --iterations 150
+1|--arm switch --refiner gc --f0-true 14 --f0-assumed 10 --iterations 150
+1|--arm switch --refiner convsi --f0-true 10 --iterations 150
+1|--arm switch --refiner convsi --f0-true 14 --f0-assumed 10 --iterations 150
+2|--arm gc --bands 5,8,12,full --iterations 150
+2|--arm switch --refiner gc --bands 5,8,12,full --iterations 150
+3|--arm gc --iterations 30
+3|--arm switch --refiner gc --iterations 30
 EOF
 }
-
 case "$MODE" in
   --list)
     cells | while IFS='|' read -r stage a; do printf '  %-13s %s\n' "$stage" "$a"; done
@@ -83,7 +85,7 @@ case "$MODE" in
   --dry-run)
     check_fixes; fail=0
     while IFS='|' read -r stage a; do
-      if out=$(python $RUN ${=a} --dry-run 2>&1); then
+      if out=$(python $RUN $a --dry-run 2>&1); then
         printf '  ok   %-13s %s\n' "$stage" \
                "$(printf '%s\n' "$out" | grep -o '=== fsyn[^ ]*' | head -1)"
       else
@@ -95,7 +97,7 @@ case "$MODE" in
     # tags must be unique or two cells share a directory (5 collisions so far)
     n=$(cells | wc -l | tr -d ' ')
     u=$(while IFS='|' read -r _ a; do
-          python $RUN ${=a} --dry-run 2>/dev/null | grep -o '=== fsyn[^ ]*'
+          python $RUN $a --dry-run 2>/dev/null | grep -o '=== fsyn[^ ]*'
         done < <(cells) | sort -u | wc -l | tr -d ' ')
     [[ "$n" == "$u" ]] || { echo "TAG COLLISION: $n cells -> $u tags"; exit 5; }
     echo "all $n configs valid, all $u tags distinct -- next: --smoke"
@@ -119,7 +121,7 @@ case "$MODE" in
   submit)
     check_fixes; n=0
     while IFS='|' read -r stage a; do
-      hpc/slurm/submit.sh field gc adam -- ${=a}; n=$((n+1))
+      hpc/slurm/submit.sh field gc adam -- $a; n=$((n+1))
     done < <(cells)
     echo; echo "submitted $n cells (~50 SU)."
     echo "read with: python hpc/standalone/rank_forge_synthetic.py"
