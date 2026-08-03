@@ -65,6 +65,9 @@ from ADFWI.fwi.misfit import (Misfit_waveform_L2, Misfit_envelope,
                               Misfit_global_correlation, Misfit_weighted_ECI)
 
 from inversion import config          # single source of truth for techniques
+from inversion.adaptive_misfit import BlendedMisfit, SkipSwitch
+from inversion.skip_diagnostic import skip_fraction
+from inversion import near_surface as ns
 from forge.field_loader import load_forge_field, summarize
 
 # ============================================================================
@@ -85,7 +88,14 @@ F_ARRIVAL_PAD = 15                 # grid padding nodes
 
 # --- starting model: 1-D vp gradient (no true model for field data) ----------
 VP_TOP, VP_BOTTOM = 2000.0, 5500.0     # linear surface->deep [m/s]
-VP_BOUND = (1500.0, 6000.0)
+#: Park INV2 uses 1.0-5.9 km/s. Our old (1500, 6000) forbade the slow alluvium
+#: of zone I outright AND made an air layer impossible (it clamps 340 -> 1500).
+VP_BOUND = ns.VP_BOUND_FIELD
+#: arms, mirroring hpc/marmousi_full_das/run_switch.py so results are comparable
+ARMS = ("switch", "fixedk", "l2", "gc", "convsi", "tfphase", "envelope")
+SOLO_ARMS = ("l2", "gc", "convsi", "tfphase")      # lambda pinned to 0
+REFINERS = ("l2", "gc", "convsi", "tfphase")
+ROBUSTS = ("envelope", "tfphase")
 
 # --- inversion machinery -----------------------------------------------------
 GRAD_MASK_TOP = 8
@@ -99,7 +109,33 @@ OPTIMIZERS = config.LIU_OPTIMIZERS
 WELLS = ("78A-32", "78B-32")
 
 
-def build_misfit(name, iterations, dt):
+def parse_bands(spec):
+    """'5,8,full' -> [5.0, 8.0, None]  (None = unfiltered)."""
+    out = [None if t.strip().lower() in ("full", "none", "0") else float(t)
+           for t in str(spec).split(",") if t.strip()]
+    if not out:
+        raise ValueError(f"no bands parsed from {spec!r}")
+    return out
+
+
+def allocate_iters(iters, n_bands, mode="final-heavy"):
+    """Iterations PER BAND. 'equal' gives the TOP band only 1/n of the budget
+    while a single-scale control gets all of it -- and the score is decided at
+    the top band. That is how multiscale was measured as harmful on Marmousi."""
+    if mode == "equal" or n_bands == 1:
+        return [iters] * n_bands
+    total = iters * n_bands
+    final = total // 2
+    rest, rem = divmod(total - final, n_bands - 1)
+    out = [rest] * (n_bands - 1) + [final]
+    out[-2] += rem
+    return out
+
+
+def build_misfit(name, iterations, dt, f_eff=None):
+    if name == "tfphase" and f_eff:
+        return config.build_misfit(name, dt=dt, iterations=iterations,
+                                   f_min=0.4 * f_eff, f_max=f_eff)
     return config.build_misfit(name, dt=dt, iterations=iterations)
 
 
@@ -122,6 +158,36 @@ def gradient_start_model(nz, nx, dz):
 # ============================================================================
 # main
 # ============================================================================
+def _route_b_starter(bundle, g, nz, nx, device, iters, optimizer_name):
+    """Short gc inversion from a 1-D gradient -> a long-wavelength starting model.
+
+    `gc` (global correlation) is used because it WON our Marmousi starter matrix
+    (skip 0.544 -> 0.439) and because it is amplitude-insensitive, which matters
+    on field data. The result is heavily smoothed by the caller: a starter that
+    is not long-wavelength is not a starter.
+    """
+    vp0 = gradient_start_model(nz, nx, g["dz"])
+    rho0 = np.power(vp0, 0.25) * 310.0
+    m0 = AcousticModel(0, 0, nx, nz, g["dx"], g["dz"], vp0, rho0,
+                       vp_bound=list(VP_BOUND), vp_grad=True, free_surface=True,
+                       abc_type="PML", abc_jerjan_alpha=0.007, nabc=g["nabc"],
+                       device=device, dtype=torch.float32)
+    p0 = AcousticPropagator(m0, bundle["survey"], device=device,
+                            dtype=torch.float32)
+    opt0 = OPTIMIZERS[optimizer_name](m0.parameters())
+    st = RUN_SETTINGS["gc"]
+    f0 = AcousticFWI(propagator=p0, model=m0, optimizer=opt0, scheduler=None,
+                     loss_fn=build_misfit("gc", iters, g["dt"]),
+                     obs_data=bundle["obs_data"],
+                     gradient_processor=GradProcessor(),
+                     waveform_normalize=st["normalize"], cache_result=False,
+                     save_fig_epoch=-1, das_layer=bundle["das_layer"],
+                     obs_key="strain_rate")
+    f0.forward(iteration=iters, batch_size=st["batch_size"],
+               checkpoint_segments=st["checkpoint_segments"])
+    return m0.vp.detach().cpu().numpy()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--well", default=WELL, choices=WELLS)
@@ -135,9 +201,52 @@ def main():
     ap.add_argument("--f0", type=float, default=F0)
     ap.add_argument("--device", default=None)
     ap.add_argument("--starting", default="gradient",
-                    choices=("gradient", "traveltime"),
-                    help="starting model: blind 1-D gradient, or data-driven "
-                         "first-break traveltime tomography")
+                    choices=("gradient", "traveltime", "route_b"),
+                    help="starting model: blind 1-D gradient; first-break "
+                         "traveltime tomography (Park's approach, needs picks); "
+                         "or route_b = a SHORT gc inversion then heavy smoothing "
+                         "-- wave-equation, NO PICKING, which is the whole "
+                         "transferability claim")
+    ap.add_argument("--starter-iters", type=int, default=50, dest="starter_iters",
+                    help="route_b: iterations of the gc pre-inversion")
+    ap.add_argument("--starter-smooth", type=float, default=6.0,
+                    dest="starter_smooth",
+                    help="route_b: post-hoc Gaussian sigma (nodes). A STARTER "
+                         "must stay long-wavelength or it is not a starter.")
+    # ---- the adaptive switch (was entirely absent from this driver) --------
+    ap.add_argument("--arm", default=None, choices=ARMS,
+                    help="switch = envelope->refiner timed by MEASURED skip; "
+                         "a solo misfit name runs that misfit alone. Default: "
+                         "the --misfit value, i.e. the old behaviour.")
+    ap.add_argument("--refiner", default="gc", choices=REFINERS,
+                    help="resolution term (lambda=0). NOTE l2 fits amplitude AND "
+                         "phase, so at FORGE it inherits the assumed-wavelet "
+                         "error; convsi is source-independent.")
+    ap.add_argument("--robust", default="envelope", choices=ROBUSTS,
+                    help="cycle-skip-tolerant term (lambda=1)")
+    ap.add_argument("--chunk", type=int, default=25,
+                    help="iterations per controller update + checkpoint")
+    ap.add_argument("--fixed-k", type=int, default=100, dest="fixed_k",
+                    help="fixedk arm: iterations before handing over")
+    # ---- multiscale (also absent) -----------------------------------------
+    ap.add_argument("--bands", default=None,
+                    help="comma-separated low-pass cut-offs, 'full' for "
+                         "unfiltered, e.g. 5,8,12,full. FORGE spans ~2.7 "
+                         "octaves so a cascade is real here, unlike Marmousi")
+    ap.add_argument("--iter-alloc", default="final-heavy", dest="iter_alloc",
+                    choices=("equal", "final-heavy"),
+                    help="'equal' starves the top band, which is what made "
+                         "multiscale look harmful on Marmousi")
+    # ---- near surface ------------------------------------------------------
+    ap.add_argument("--z-air", type=float, default=0.0, dest="z_air",
+                    help="air-layer thickness (m). MEASURE THE RELIEF FIRST: "
+                         "if it is < lambda/4 the flat datum is fine and this "
+                         "only costs grid. 0 = no air layer.")
+    ap.add_argument("--grad-smooth", default="none", dest="grad_smooth",
+                    choices=("none", "wavelength"),
+                    help="wavelength = ANISOTROPIC lambda/4 smoothing, 4:1 H:V "
+                         "(Park use 2:1 and 4:1); isotropic discards the "
+                         "vertical resolution a VSP exists to provide")
     ap.add_argument("--smoke", action="store_true", help="2-iteration check")
     ap.add_argument("--qc", default="on", choices=("on", "off", "strict"),
                     help="DAS waveform-shape QC before inverting. 'strict' "
@@ -148,7 +257,22 @@ def main():
 
     device = pick_device(args.device)
     iterations = 2 if args.smoke else args.iterations
-    tag = (f"field_{args.well}_{args.misfit}_{args.optimizer}"
+    arm = args.arm or args.misfit
+    if arm in SOLO_ARMS:
+        args.refiner = arm                     # solo arm IS its own refiner
+    bands = parse_bands(args.bands) if args.bands else [None]
+    iters_by_band = allocate_iters(max(1, iterations // len(bands)),
+                                   len(bands), args.iter_alloc)
+    # EVERY knob that changes the experiment goes in the tag. This class of bug
+    # (two configurations writing to one directory) has appeared five times.
+    pair = "" if args.refiner in ("l2", arm) else f"-{args.refiner}"
+    rb = "" if args.robust == "envelope" or arm in SOLO_ARMS else f"+{args.robust}"
+    tag = ("field_" + args.well + "_" + arm + pair + rb + "_" + args.optimizer
+           + "_" + args.starting
+           + ("_b" + args.bands.replace(",", "-") if args.bands else "")
+           + ("_fh" if args.bands and args.iter_alloc == "final-heavy" else "")
+           + ("_air" if args.z_air > 0 else "")
+           + ("_g" if args.grad_smooth != "none" else "")
            + ("_smoke" if args.smoke else ""))
     out_dir = OUT_ROOT / tag
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -216,13 +340,42 @@ def main():
               f"{z_prof.min():.0f}-{z_prof.max():.0f} m "
               f"(nearest offset {offset:.0f} m; use a near-offset shot for a "
               f"reliable profile)", flush=True)
+    elif args.starting == "route_b":
+        # ROUTE B: a short gc inversion from the blind 1-D gradient, then heavy
+        # smoothing. Wave-equation, NO PICKING -- Park manually pick first
+        # arrivals on 100 CSGs, and not needing that is the transferability
+        # claim. Kept INSIDE this driver rather than as a separate script so it
+        # inherits the loader, the QC, the near-surface setup and the tag rules.
+        from scipy.ndimage import gaussian_filter
+        vp_init = _route_b_starter(bundle, g, nz, nx, device,
+                                   args.starter_iters, args.optimizer)
+        vp_init = gaussian_filter(vp_init, sigma=args.starter_smooth)
+        vp_init = np.clip(vp_init, *VP_BOUND)
+        print(f"    route_b starter: {args.starter_iters} gc iterations, "
+              f"sigma={args.starter_smooth} nodes, "
+              f"vp {vp_init.min():.0f}-{vp_init.max():.0f} m/s", flush=True)
     else:
         vp_init = gradient_start_model(nz, nx, g["dz"])
+
+    # ---- near surface: air layer + bounds + anisotropic smoothing ----------
+    n_air = ns.air_cells(args.z_air, g["dz"])
+    if n_air:
+        vp_init = ns.with_air_layer(vp_init, n_air)
+    water_mask = ns.air_mask(nz, nx, n_air) if n_air else None
+    print("    " + ns.describe(nz, nx, g["dz"], args.z_air, VP_BOUND[0],
+                               args.f0, g["dx"],
+                               src_z=np.asarray(bundle["src_z_grid"]) * g["dz"]),
+          flush=True)
 
     # [5] inversion (Liu's machinery through the T5-patched AcousticFWI)
     rho = np.power(vp_init, 0.25) * 310.0
     model = AcousticModel(0, 0, nx, nz, g["dx"], g["dz"], vp_init, rho,
                           vp_bound=list(VP_BOUND), vp_grad=True,
+                          # water_layer_mask makes clip_params keep the
+                          # UNCLAMPED value there, so 340 m/s air survives a
+                          # 1000 m/s lower bound. Without it the bound destroys
+                          # the air layer on the first update.
+                          water_layer_mask=water_mask,
                           free_surface=True, abc_type="PML",
                           abc_jerjan_alpha=0.007, nabc=g["nabc"],
                           device=device, dtype=torch.float32)
@@ -231,14 +384,36 @@ def main():
     optimizer = OPTIMIZERS[args.optimizer](model.parameters())
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, **SCHEDULER)
     grad_mask = np.ones((nz, nx))
-    grad_mask[:GRAD_MASK_TOP, :] = 0
-    settings = RUN_SETTINGS[args.misfit]
+    grad_mask[:max(GRAD_MASK_TOP, n_air), :] = 0        # never update the air
+    settings = RUN_SETTINGS[args.refiner if arm in SOLO_ARMS else args.refiner]
+
+    f_eff = args.f0
+    # THE SWITCH. Solo arms pin lambda; `switch` moves it on the MEASURED skip
+    # fraction, which needs only syn vs obs -- no true model -- so it works on
+    # field data exactly as it does on synthetics.
+    loss_fn = BlendedMisfit(build_misfit(args.refiner, iterations, g["dt"], f_eff),
+                            build_misfit(args.robust, iterations, g["dt"], f_eff),
+                            lam=1.0, normalize=True)
+    ctrl = SkipSwitch() if arm == "switch" else None
+    obs_arr = np.asarray(bundle["obs_data"].data["strain_rate"])
+
+    gp_kw = {}
+    if args.grad_smooth == "wavelength":
+        sx, sz = ns.anisotropic_span(VP_BOUND[0], args.f0, g["dx"], g["dz"])
+        gp_kw["grad_smooth"] = sz          # ADFWI's own span is isotropic; the
+        print(f"    grad smoothing {sx}x{sz} cells "  # anisotropic pass is applied
+              f"({sx*g['dx']:.0f}x{sz*g['dz']:.0f} m) -- ADFWI applies the "
+              f"vertical span; H:V handled by near_surface", flush=True)
 
     fwi = AcousticFWI(propagator=prop, model=model,
                       optimizer=optimizer, scheduler=scheduler,
-                      loss_fn=build_misfit(args.misfit, iterations, g["dt"]),
+                      loss_fn=loss_fn,
                       obs_data=bundle["obs_data"],
-                      gradient_processor=GradProcessor(grad_mask=grad_mask),
+                      gradient_processor=GradProcessor(grad_mask=grad_mask,
+                                                       grad_mute=n_air,
+                                                       marine_or_land=("marine"
+                                                           if n_air else "land"),
+                                                       **gp_kw),
                       waveform_normalize=settings["normalize"],
                       cache_result=True, cache_result_epoch=CACHE_EVERY,
                       save_fig_epoch=-1,
@@ -248,7 +423,6 @@ def main():
     # once per iteration regardless, so chunking is trajectory-identical to one
     # call. FIELD runs are long and have no truth to fall back on -- losing one
     # to the walltime would be a total loss.
-    CKPT_EVERY = 25
 
     def _save(done, hours, complete):
         iter_loss = np.asarray(fwi.iter_loss)
@@ -267,20 +441,65 @@ def main():
             losses_finite=bool(np.isfinite(iter_loss).all()),
             grad_finite=bool(np.isfinite(grad_final).all()),
             grad_nonzero=bool(np.abs(grad_final).max() > 0),
-            vp_final_range=[float(vp_final.min()), float(vp_final.max())])
+            vp_final_range=[float(vp_final.min()), float(vp_final.max())],
+            arm=arm, refiner=args.refiner, robust=args.robust,
+            starting=args.starting, bands=[("full" if b is None else b)
+                                           for b in bands],
+            iters_per_band=list(iters_by_band), iter_alloc=args.iter_alloc,
+            z_air=args.z_air, n_air_rows=int(n_air),
+            vp_bound=list(VP_BOUND), grad_smooth=args.grad_smooth,
+            handovers=(ctrl.handbacks if ctrl is not None else None),
+            trajectory=traj)
         (out_dir / "metrics.json").write_text(json.dumps(m, indent=2))
         return vp_final, iter_loss, m
 
+    def measure_skip(f_band):
+        """Skip fraction on the RAW data. Needs only syn vs obs -- NO true model
+        -- which is why the switch transfers to field data unchanged."""
+        with torch.no_grad():
+            rec = prop.forward(checkpoint_segments=settings["checkpoint_segments"])
+            syn = bundle["das_layer"](rec["u"], rec["w"]).cpu()
+        return float(skip_fraction(syn, obs_arr, g["dt"], f_band)["skip_fraction"])
+
     t0 = time.time()
     done = 0
-    while done < iterations:
-        n = min(CKPT_EVERY, iterations - done)
-        fwi.forward(iteration=n, start_iter=done,
-                    batch_size=settings["batch_size"],
-                    checkpoint_segments=settings["checkpoint_segments"])
-        done += n
-        _save(done, (time.time() - t0) / 3600.0, complete=(done >= iterations))
-        print(f"  checkpoint {done}/{iterations}", flush=True)
+    traj = []
+    for bi, f_band in enumerate(bands):
+        fb = args.f0 if f_band is None else min(f_band, args.f0)
+        band_iters = iters_by_band[bi]
+        # A FRESH controller per band: raising the band raises f_max, so skip
+        # jumps at every boundary and the controller must be free to re-enter
+        # the robust stage -- one persistent switch's ratchet would block it.
+        if arm == "switch":
+            ctrl = SkipSwitch()
+        print(f"--- band {bi+1}/{len(bands)} [{band_iters} iters]: "
+              f"cutoff={'full' if f_band is None else f'{f_band} Hz'} "
+              f"(f_eff={fb:.2f}, T/2={1000/(2*fb):.0f} ms) ---", flush=True)
+        in_band = 0
+        while in_band < band_iters:
+            sk = measure_skip(fb)
+            if arm == "switch":
+                lam = ctrl.update(sk)
+            elif arm == "fixedk":
+                lam = 1.0 if done < args.fixed_k else 0.0
+            else:
+                lam = 0.0 if arm in SOLO_ARMS else 1.0
+            loss_fn.set_lambda(lam)
+            mode = args.robust.upper() if lam >= 0.5 else args.refiner.upper()
+            print(f"  iter {done:3d}: skip={sk:.3f} -> lambda={lam:.0f} ({mode})",
+                  flush=True)
+            traj.append(dict(iter=done, band=(None if f_band is None else f_band),
+                             skip=sk, lam=float(lam)))
+            n = min(args.chunk, band_iters - in_band)
+            fwi.forward(iteration=n, start_iter=done,
+                        batch_size=settings["batch_size"],
+                        checkpoint_segments=settings["checkpoint_segments"],
+                        cutoff_freq=f_band)
+            done += n; in_band += n
+            _save(done, (time.time() - t0) / 3600.0,
+                  complete=(done >= sum(iters_by_band)))
+            print(f"  checkpoint {done}/{sum(iters_by_band)}", flush=True)
+    iterations = sum(iters_by_band)
     hours = (time.time() - t0) / 3600.0
 
     # [6] outputs (no RMS-vs-truth for field data)
