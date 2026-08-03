@@ -48,10 +48,10 @@ def test_relief_decides_whether_the_air_layer_matters():
     assert topography_relief(np.array([0.0, 12.0, 40.0, 7.0])) == 40.0
     small = describe(200, 300, 10.0, 100.0, 1500.0, 20.0, 10.0,
                      src_z=np.array([0.0, 10.0, 4.0]))       # 10 m < 18.75
-    assert "relief small" in small, small
+    assert "flat datum ok" in small, small
     big = describe(200, 300, 10.0, 100.0, 1500.0, 20.0, 10.0,
                    src_z=np.array([0.0, 40.0]))              # 40 m > 18.75
-    assert "MATTERS" in big, big
+    assert "AIR LAYER REQUIRED" in big, big
 
 
 # --------------------------------------------------------------------------- #
@@ -103,3 +103,52 @@ def test_describe_surfaces_the_setup():
     txt = describe(200, 300, 10.0, 100.0, 1500.0, 20.0, 10.0)
     assert "air 10 rows" in txt and "1000-6000" in txt and "H:V 4:1" in txt
     assert "NO air layer" in describe(200, 300, 10.0, 0.0, 1500.0, 20.0, 10.0)
+
+
+# --------------------------------------------------------------------------- #
+# topography-following air layer -- MEASURED at FORGE, not assumed
+# --------------------------------------------------------------------------- #
+from inversion.near_surface import (surface_profile, air_mask_topo,      # noqa: E402
+                                    with_air_layer_topo)
+
+# the real FORGE ramp: 161.6 m over ~2960 m, corr(x,z) = +0.994, 318 shots
+FORGE_SX = np.array([-1547.0, -691.0, 214.0, 1412.0])
+FORGE_SZ = np.array([0.0, 65.0, 108.2, 161.6])
+
+
+def test_a_uniform_air_slab_is_wrong_at_forge():
+    """THE POINT: at one end of the line the ground IS the datum (zero air), at
+    the other it is 162 m below. A constant-thickness slab cannot represent
+    that, which is what "the inclined nature of the surface topography" means."""
+    gd = surface_profile(FORGE_SX, FORGE_SZ, nx=60, dx=50.0, x0=-1547.0)
+    assert gd[0] == pytest.approx(0.0, abs=1e-9)      # datum end: NO air
+    assert gd[-1] > 130.0                             # far end: lots of air
+    assert np.all(np.diff(gd) >= -1e-9), "the measured profile is monotonic"
+
+
+def test_air_mask_follows_the_ramp():
+    gd = surface_profile(FORGE_SX, FORGE_SZ, nx=60, dx=50.0, x0=-1547.0)
+    m = air_mask_topo(40, 60, gd, dz=10.0)
+    per_col = m.sum(axis=0)
+    assert per_col[0] == 0                            # no air at the datum end
+    assert per_col[-1] >= 13                          # ~162 m / 10 m
+    assert np.all(np.diff(per_col) >= 0), "air thickness must track the ramp"
+
+
+def test_topographic_air_layer_sets_only_the_air():
+    gd = surface_profile(FORGE_SX, FORGE_SZ, nx=40, dx=80.0, x0=-1547.0)
+    vp = with_air_layer_topo(np.full((30, 40), 3000.0), gd, dz=10.0)
+    m = air_mask_topo(30, 40, gd, dz=10.0)
+    assert (vp[m] == V_AIR).all() and (vp[~m] == 3000.0).all()
+    # and the ROCK column under the datum end is untouched top to bottom
+    assert (vp[:, 0] == 3000.0).all()
+
+
+def test_describe_quantifies_the_flat_datum_error():
+    """A flat datum fabricates a free-surface ghost 2h/v late. At FORGE that is
+    215 ms = 8.6 half-cycles at 20 Hz -- far past cycle skipping, an invented
+    arrival. The log must say so rather than silently proceeding."""
+    txt = describe(200, 300, 10.0, 162.0, 1500.0, 20.0, 10.0,
+                   src_z=FORGE_SZ)
+    assert "AIR LAYER REQUIRED" in txt
+    assert "half-cycles" in txt and "ghost" in txt

@@ -242,6 +242,10 @@ def main():
                     help="air-layer thickness (m). MEASURE THE RELIEF FIRST: "
                          "if it is < lambda/4 the flat datum is fine and this "
                          "only costs grid. 0 = no air layer.")
+    ap.add_argument("--topo-air", action="store_true", dest="topo_air",
+                    help="air layer FOLLOWING the measured topography (the "
+                         "FORGE surface is a 162 m ramp, so a uniform slab is "
+                         "wrong). Overrides --z-air.")
     ap.add_argument("--grad-smooth", default="none", dest="grad_smooth",
                     choices=("none", "wavelength"),
                     help="wavelength = ANISOTROPIC lambda/4 smoothing, 4:1 H:V "
@@ -358,13 +362,29 @@ def main():
         vp_init = gradient_start_model(nz, nx, g["dz"])
 
     # ---- near surface: air layer + bounds + anisotropic smoothing ----------
-    n_air = ns.air_cells(args.z_air, g["dz"])
-    if n_air:
-        vp_init = ns.with_air_layer(vp_init, n_air)
-    water_mask = ns.air_mask(nz, nx, n_air) if n_air else None
-    print("    " + ns.describe(nz, nx, g["dz"], args.z_air, VP_BOUND[0],
-                               args.f0, g["dx"],
-                               src_z=np.asarray(bundle["src_z_grid"]) * g["dz"]),
+    # AIR LAYER FOLLOWING THE TOPOGRAPHY, not a uniform slab. MEASURED at FORGE:
+    # the surface is a ramp dropping 161.6 m over ~2960 m (corr(x,z)=+0.994), so
+    # at one end the ground IS the datum and at the other it is 162 m below. A
+    # flat datum fabricates a free-surface ghost 2h/v = 215 ms late = 8.6
+    # half-cycles at 20 Hz -- an invented arrival, far past cycle skipping.
+    src_z_m = np.asarray(bundle["src_z_grid"], float) * g["dz"]
+    if args.topo_air:
+        ground = ns.surface_profile(np.asarray(bundle["src_x_grid"], float) * g["dx"],
+                                    src_z_m, nx, g["dx"])
+        vp_init = ns.with_air_layer_topo(vp_init, ground, g["dz"])
+        water_mask = ns.air_mask_topo(nz, nx, ground, g["dz"])
+        n_air = int(water_mask.sum(axis=0).max())
+        print(f"    topographic air layer: ground {ground.min():.0f}-"
+              f"{ground.max():.0f} m below datum, {n_air} rows at the deepest "
+              f"column", flush=True)
+    else:
+        n_air = ns.air_cells(args.z_air, g["dz"])
+        if n_air:
+            vp_init = ns.with_air_layer(vp_init, n_air)
+        water_mask = ns.air_mask(nz, nx, n_air) if n_air else None
+    print("    " + ns.describe(nz, nx, g["dz"],
+                               (float(n_air) * g["dz"]) if n_air else args.z_air,
+                               VP_BOUND[0], args.f0, g["dx"], src_z=src_z_m),
           flush=True)
 
     # [5] inversion (Liu's machinery through the T5-patched AcousticFWI)

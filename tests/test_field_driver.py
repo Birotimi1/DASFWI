@@ -16,7 +16,8 @@ from run_field_das import parse_bands, allocate_iters, ARMS, SOLO_ARMS  # noqa: 
 
 def _tag(well="78A-32", arm="gc", refiner="gc", robust="envelope",
          optimizer="adam", starting="gradient", bands=None,
-         iter_alloc="final-heavy", z_air=0.0, grad_smooth="none", smoke=False):
+         iter_alloc="final-heavy", z_air=0.0, topo_air=False,
+         grad_smooth="none", smoke=False):
     """Mirror of the driver's tag construction (kept in step by the tests)."""
     if arm in SOLO_ARMS:
         refiner = arm
@@ -26,7 +27,7 @@ def _tag(well="78A-32", arm="gc", refiner="gc", robust="envelope",
             + "_" + starting
             + ("_b" + bands.replace(",", "-") if bands else "")
             + ("_fh" if bands and iter_alloc == "final-heavy" else "")
-            + ("_air" if z_air > 0 else "")
+            + ("_topoair" if topo_air else "_air" if z_air > 0 else "")
             + ("_g" if grad_smooth != "none" else "")
             + ("_smoke" if smoke else ""))
 
@@ -37,7 +38,8 @@ def test_every_knob_reaches_the_tag():
     base = _tag()
     for kw in (dict(arm="switch"), dict(optimizer="sgd"),
                dict(starting="route_b"), dict(bands="5,8,full"),
-               dict(z_air=100.0), dict(grad_smooth="wavelength"),
+               dict(z_air=100.0), dict(topo_air=True),
+               dict(grad_smooth="wavelength"),
                dict(well="78B-32"), dict(smoke=True)):
         assert _tag(**kw) != base, f"{kw} does not reach the tag"
 
@@ -104,3 +106,11 @@ def test_arms_cover_the_field_misfits_we_can_actually_use():
     for m in ("convsi", "gc", "tfphase", "l2", "switch"):
         assert m in ARMS
     assert "convsi" in SOLO_ARMS and "switch" not in SOLO_ARMS
+
+
+def test_topographic_air_is_distinguishable_from_a_flat_slab():
+    """They are DIFFERENT models: at FORGE the ground is the datum at one end of
+    the line and 162 m below it at the other, so a uniform slab cannot represent
+    the surface. Sharing a tag would conflate two different experiments."""
+    assert _tag(topo_air=True) != _tag(z_air=162.0)
+    assert "_topoair" in _tag(topo_air=True)

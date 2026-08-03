@@ -60,6 +60,46 @@ def topography_relief(src_z):
     return float(np.nanmax(z) - np.nanmin(z))
 
 
+def surface_profile(src_x, src_z, nx, dx, x0=0.0):
+    """Ground depth below datum for EVERY grid column, from the source elevations.
+
+    MEASURED AT FORGE (2026-08-03, 318 shots): the topography is an almost
+    perfect RAMP -- correlation(x, z) = +0.994, dropping 161.6 m over ~2960 m
+    (~3 degrees), with at most 6.2 m between neighbouring shots. So linear
+    interpolation between shots, with edge hold beyond them, is faithful; there
+    are no cliffs to alias.
+
+    A UNIFORM-THICKNESS air slab is WRONG at this site: at one end of the line
+    the ground IS the datum (zero air) and at the other it is 158 m below it.
+    That is exactly what Park mean by "the inclined nature of the surface
+    topography", and why they add an air layer rather than just a datum shift.
+    """
+    sx = np.asarray(src_x, float).ravel()
+    sz = np.asarray(src_z, float).ravel()
+    o = np.argsort(sx)
+    sx, sz = sx[o], sz[o]
+    xs = x0 + np.arange(int(nx)) * float(dx)
+    return np.interp(xs, sx, sz)            # np.interp holds the edge values
+
+
+def air_mask_topo(nz, nx, ground_depth, dz):
+    """Boolean [nz, nx] air mask whose lower edge FOLLOWS the topography.
+
+    `ground_depth` is metres below datum per column (see `surface_profile`).
+    Cell (i, j) is air when its depth is above that column's ground.
+    """
+    depth = (np.arange(int(nz))[:, None] + 0.5) * float(dz)
+    return depth < np.asarray(ground_depth, float)[None, :]
+
+
+def with_air_layer_topo(vp, ground_depth, dz, v_air=V_AIR):
+    """Copy of `vp` with air ABOVE the topographic surface, column by column."""
+    out = np.array(vp, dtype=float, copy=True)
+    m = air_mask_topo(out.shape[0], out.shape[1], ground_depth, dz)
+    out[m] = float(v_air)
+    return out
+
+
 def air_mask(nz, nx, n_air):
     """Boolean [nz, nx] marking the air rows -- for `water_layer_mask`.
 
@@ -138,7 +178,14 @@ def describe(nz, nx, dz, z_air, v_min, f_max, dx, src_z=None, aspect=4.0):
     if src_z is not None:
         relief = topography_relief(src_z)
         lam = v_min / f_max
-        parts.append(f"relief {relief:.0f} m vs lambda {lam:.0f} m"
-                     + ("  *** relief > lambda/4: air layer MATTERS"
-                        if relief > 0.25 * lam else "  (relief small: flat datum ok)"))
+        parts.append(f"relief {relief:.0f} m vs lambda {lam:.0f} m")
+        if relief > 0.25 * lam:
+            # the flat-datum error is a SPURIOUS free-surface ghost: a source
+            # sitting h below a flat datum reflects off it 2h/v late
+            ghost_ms = 2.0 * relief / v_min * 1000.0
+            parts.append(f"*** AIR LAYER REQUIRED: a flat datum fabricates a "
+                         f"free-surface ghost {ghost_ms:.0f} ms late "
+                         f"= {ghost_ms / (1000.0 / (2 * f_max)):.1f} half-cycles")
+        else:
+            parts.append("relief < lambda/4: flat datum ok, air layer not needed")
     return "near-surface: " + "; ".join(parts)
