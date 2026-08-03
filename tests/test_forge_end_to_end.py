@@ -36,7 +36,7 @@ def chain():
     """Generate ELASTICALLY (+noise), invert ACOUSTICALLY -- the field's real
     physics mismatch, which an inverse-crime synthetic cannot reproduce."""
     vp_true = forge_proxy_vp(NZ, NX, dz=DZ, z_air=ZAIR)
-    geom = merge_fibers(list(forge_fibers(NZ, 150.0, 250.0, 80.0, 20, DZ)))
+    geom = merge_fibers(list(forge_fibers(NZ, 150.0, 250.0, 80.0, 20, DZ, dx=DX)))
     src = vibroseis_line(NT, DT, F0, [10, 40, 70], int(ZAIR / DZ))
     obs, survey, layer = elastic_observed(vp_true, geom, src, DX, DZ, nabc=10,
                                           snr_db=20.0, device="cpu",
@@ -116,3 +116,37 @@ def test_the_switch_measures_and_hands_over_on_FIELD_LIKE_data(chain):
     assert skips[-1] < skips[0], f"skip did not fall: {skips}"
     assert set(lams) <= {0.0, 1.0}, f"lambda must stay binary: {lams}"
     assert lams[0] == 1.0, "must START in the robust stage at a skipped start"
+
+
+# --------------------------------------------------------------------------- #
+# geometry must track the GRID, not the module defaults
+# --------------------------------------------------------------------------- #
+def test_fibres_land_inside_the_grid_at_any_dx():
+    """REGRESSION: forge_fibers took `dz` but HARDCODED dx to the module DX
+    (5 m). On Park's 10 m grid every well x-position DOUBLED -- 1835 m / 5 =
+    column 367 on a 296-column model -- and the elastic kernel died with
+    'index 387 is out of bounds'. Silent until something ran at 10 m."""
+    from forge.proxy_model import forge_fibers as ff
+    for dx in (5.0, 10.0, 20.0):
+        nx = int(2960.0 / dx)
+        g = merge_fibers(list(ff(200, x_well_a=0.45 * 2960.0,
+                                 x_well_b=0.62 * 2960.0, z_top=261.6,
+                                 n_channels=140, dz=dx, dx=dx)))
+        rx = np.array([x for _, x in g.rcv_pos])
+        rz = np.array([k for k, _ in g.rcv_pos])
+        assert rx.max() < nx, f"dx={dx}: x index {rx.max()} >= nx {nx}"
+        assert rz.max() < 200, f"dx={dx}: z index {rz.max()} >= nz 200"
+        # and the wells must land at the requested METRE positions
+        assert abs(rx.min() * dx - 0.45 * 2960.0) < 2 * dx
+
+
+def test_gauge_length_tracks_dz_for_E3_exactness():
+    """E3 is exact only when the gauge endpoints sit ON grid nodes, i.e.
+    l = 2*dz. The gauge was hardcoded to 10 m = 2*5 m, so at dz = 10 m the
+    endpoints fell half a cell off and the operator silently stopped being
+    exact -- it still returns numbers, which is what makes it dangerous."""
+    from forge.proxy_model import forge_fibers as ff
+    for dz in (5.0, 10.0, 20.0):
+        fib = ff(200, 1000.0, 1400.0, 300.0, 50, dz=dz, dx=dz)[0]
+        assert fib.l == pytest.approx(2.0 * dz), \
+            f"dz={dz}: gauge {fib.l} m should be {2*dz} m for node-exact E3"

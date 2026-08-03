@@ -118,7 +118,7 @@ def make_acoustic_model(vp, vp_grad=False, dx=DX, dz=DZ, nabc=20,
 
 
 def forge_fibers(nz, x_well_a=1000.0, x_well_b=1400.0, z_top=Z_AIR + 100.0,
-                 n_channels=None, dz=DZ, synthetic=True):
+                 n_channels=None, dz=DZ, synthetic=True, dx=None, gauge_l=None):
     """The two vertical FORGE fibers (wells 78A-32 and 78B-32).
 
     x positions default to placeholders; set the REAL well x-positions from
@@ -128,8 +128,20 @@ def forge_fibers(nz, x_well_a=1000.0, x_well_b=1400.0, z_top=Z_AIR + 100.0,
     """
     if n_channels is None:
         n_channels = int(0.85 * nz - z_top / dz)
-    kwargs = dict(z_top=z_top, n_channels=n_channels, dch=DCH, l=GAUGE_L,
-                  dx=DX, dz=dz, snap_to_nodes=not synthetic)
+    # dx and the gauge length MUST track dz, or the fibres land in the wrong
+    # place on any grid but the 5 m one this was written for. Two real faults,
+    # both caught by the first 10 m run:
+    #   * dx was hardcoded to the module DX (5 m), so on a 10 m grid every well
+    #     x-position DOUBLED -- receiver index 367 on a 296-column model, which
+    #     the elastic kernel reported as an out-of-bounds index.
+    #   * the gauge length was hardcoded to 10 m = 2*5 m. E3 is EXACT only when
+    #     the gauge endpoints sit on grid nodes, i.e. l = 2*dz; at dz = 10 m a
+    #     10 m gauge puts them half a cell off and the operator stops being
+    #     exact -- silently, since it still returns numbers.
+    dx = float(DX if dx is None else dx)
+    gauge_l = float(2.0 * dz if gauge_l is None else gauge_l)
+    kwargs = dict(z_top=z_top, n_channels=n_channels, dch=DCH, l=gauge_l,
+                  dx=dx, dz=dz, snap_to_nodes=not synthetic)
     return (FiberGeometry(x_well=x_well_a, **kwargs),
             FiberGeometry(x_well=x_well_b, **kwargs))
 
