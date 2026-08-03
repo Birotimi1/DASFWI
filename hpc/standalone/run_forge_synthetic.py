@@ -61,7 +61,8 @@ OUT_ROOT = Path(os.environ.get("DASFWI_RESULTS", "results")) / "forge_synthetic"
 
 # ---- Park's INV3 geometry, and the MEASURED FORGE surface ------------------
 DX = DZ = 10.0                 # Park: "the spatial grid interval is 10 m"
-NT, DT = 2000, 1e-3            # Park: "0.001 s over a total recording time of 2 s"
+RECORD_S = 2.0                 # Park: "a total recording time of 2 s"
+DT_PARK = 1e-3                 # Park's dt -- NOT usable with our scheme, see below
 #: measured from 318 shots: 161.6 m of relief over ~2960 m, corr(x,z)=+0.994
 RELIEF_M, SECTION_M = 161.6, 2960.0
 DEPTH_M = 2000.0               # DAS-VSP constrains the upper ~1 km; model deeper
@@ -162,8 +163,10 @@ def main():
     n_air = int(ns.air_mask_topo(nz, nx, ground, DZ).sum(axis=0).max())
 
     print(f"=== {tag} on {dev} ===", flush=True)
-    print(f"    grid {nz}x{nx} @ {DZ:g} m, nt={NT}, dt={DT}  (Park's INV3)",
-          flush=True)
+    _dt_c, _nt_c = ns.stable_time_axis(5896.0, DX, RECORD_S, dt_wanted=DT_PARK)
+    print(f"    grid {nz}x{nx} @ {DZ:g} m, {RECORD_S:g} s record -> "
+          f"dt={_dt_c*1e3:.3f} ms, nt={_nt_c} (CFL-limited; Park use "
+          f"{DT_PARK*1e3:g} ms, which is unstable in our scheme)", flush=True)
     print(f"    data: {'ACOUSTIC (INVERSE CRIME)' if args.acoustic_data else 'ELASTIC'}"
           f", SNR {args.snr:g} dB, true f0 {args.f0_true:g} Hz, "
           f"inversion assumes {f0_asm:g} Hz"
@@ -180,6 +183,17 @@ def main():
 
     out_dir.mkdir(parents=True, exist_ok=True)
     vp_true = build_truth(nz, nx, ground)
+    # >>> CFL. Park's dt = 1 ms at 10 m sits at 0.97x our scheme's limit and the
+    # run blows up SLOWLY: 0.6 s -> max|u| 9.9, 1.2 s -> 196, 2.0 s -> NaN. A
+    # short smoke passes and the real 2 s record dies. Derive dt from the ACTUAL
+    # vmax instead of copying a number from a different code. <<<
+    global NT, DT
+    DT, NT = ns.stable_time_axis(float(vp_true.max()), DX, RECORD_S,
+                                 dt_wanted=DT_PARK)
+    print(f"    CFL: vmax={vp_true.max():.0f} m/s -> dt={DT*1e3:.3f} ms, "
+          f"nt={NT} for a {RECORD_S:g} s record"
+          + (f"  (Park's {DT_PARK*1e3:g} ms is UNSTABLE here)"
+             if DT < DT_PARK else ""), flush=True)
     geom = merge_fibers(list(forge_fibers(
         nz, x_well_a=0.45 * SECTION_M, x_well_b=0.62 * SECTION_M,
         z_top=RELIEF_M + 100.0, n_channels=int(0.7 * nz), dz=DZ, dx=DX)))

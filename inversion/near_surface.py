@@ -163,6 +163,36 @@ def smooth2d_anisotropic(z, span_x, span_z):
     return a
 
 
+def cfl_dt(vmax, dx, safety=0.45, order=4):
+    """Largest STABLE time step for the FD scheme, in seconds.
+
+    MEASURED, not taken on faith. At the FORGE setup (dx=10 m, vmax=5896 m/s)
+    Park's dt = 1 ms sits at 0.97x the nominal 4th-order limit, and the run
+    LOOKS FINE then blows up slowly:
+        0.6 s -> max|u| 9.9      1.2 s -> 196      2.0 s -> NaN
+    So a short smoke passes and the real 2 s record dies -- the worst possible
+    failure shape. `safety=0.45` is deliberately below the nominal 0.606 because
+    the air/rock contrast (17:1) and the PML both erode the margin.
+
+    We cannot simply copy Park's dt: their scheme's stability limit is not ours.
+    """
+    if not (vmax > 0 and dx > 0):
+        raise ValueError(f"need positive vmax/dx, got {vmax}/{dx}")
+    return float(safety) * float(dx) / float(vmax)
+
+
+def stable_time_axis(vmax, dx, record_s, dt_wanted=None, safety=0.45):
+    """(dt, nt) that keep `record_s` seconds AND stay stable.
+
+    Shortening dt without lengthening nt would silently TRUNCATE the record,
+    which is its own quiet corruption -- the far offsets would simply lose their
+    arrivals. So nt grows to preserve the record length.
+    """
+    dt_max = cfl_dt(vmax, dx, safety)
+    dt = min(dt_wanted, dt_max) if dt_wanted else dt_max
+    return float(dt), int(np.ceil(float(record_s) / dt))
+
+
 def describe(nz, nx, dz, z_air, v_min, f_max, dx, src_z=None, aspect=4.0):
     """One-line summary for the job log, so the near-surface setup is VISIBLE.
 

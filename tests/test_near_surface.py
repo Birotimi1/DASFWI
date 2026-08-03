@@ -152,3 +152,40 @@ def test_describe_quantifies_the_flat_datum_error():
                    src_z=FORGE_SZ)
     assert "AIR LAYER REQUIRED" in txt
     assert "half-cycles" in txt and "ghost" in txt
+
+
+# --------------------------------------------------------------------------- #
+# CFL -- the failure that PASSES a short smoke and dies on the real record
+# --------------------------------------------------------------------------- #
+from inversion.near_surface import cfl_dt, stable_time_axis          # noqa: E402
+
+
+def test_park_dt_is_unstable_in_our_scheme():
+    """MEASURED: at dx=10 m with vmax=5896 m/s, Park's dt=1 ms gives
+    max|u| 9.9 at 0.6 s, 196 at 1.2 s, NaN at 2.0 s. A slow blow-up, so a short
+    smoke passes and the real 2 s record dies. We cannot copy a dt from another
+    code -- their stability limit is not ours."""
+    assert cfl_dt(5896.0, 10.0) < 1e-3, "Park's 1 ms must be rejected here"
+    assert cfl_dt(5896.0, 10.0) == pytest.approx(0.763e-3, rel=0.01)
+
+
+def test_stable_axis_preserves_the_record_length():
+    """Shortening dt without lengthening nt silently TRUNCATES the record and
+    the far offsets lose their arrivals -- a quiet corruption of its own."""
+    dt, nt = stable_time_axis(5896.0, 10.0, record_s=2.0, dt_wanted=1e-3)
+    assert dt < 1e-3                       # capped by CFL
+    assert dt * nt >= 2.0                  # the record is still 2 s
+    assert nt > 2000                       # ...which costs more samples
+
+
+def test_a_slower_medium_keeps_the_requested_dt():
+    """The cap must only bite when it has to."""
+    dt, nt = stable_time_axis(2000.0, 10.0, record_s=2.0, dt_wanted=1e-3)
+    assert dt == pytest.approx(1e-3)       # 1 ms is safe at 2000 m/s
+    assert nt == 2000
+
+
+def test_cfl_validates_inputs():
+    for bad in ((0.0, 10.0), (5896.0, 0.0), (-1.0, 10.0)):
+        with pytest.raises(ValueError):
+            cfl_dt(*bad)
