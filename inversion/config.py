@@ -39,10 +39,11 @@ from inversion.safe_misfits import (SinkhornSafe, SdtwSafe, TravelTimeSafe,
 # 1. MISFITS
 # ---------------------------------------------------------------------------
 MISFITS = ("l2", "envelope", "gc", "sdtw", "sinkhorn", "weci",
-           "traveltime", "nim", "convsi")
+           "traveltime", "nim", "convsi", "tfphase")
 
 #: misfits that need FFT / pysdtw and so run on CUDA or CPU but NOT Apple MPS
-CUDA_OR_CPU_ONLY = ("envelope", "weci", "sdtw", "convsi")
+#: torch.stft is not implemented for MPS, so tfphase joins the FFT-based set
+CUDA_OR_CPU_ONLY = ("envelope", "weci", "sdtw", "convsi", "tfphase")
 
 #: one-line description of each misfit's role (for reports / the matrix)
 MISFIT_ROLE = {
@@ -56,6 +57,12 @@ MISFIT_ROLE = {
     "nim":        "normalized integration = Wasserstein-1 (cycle-skip robust)",
     "convsi":     "convolved-wavefields SOURCE-INDEPENDENT (unknown wavelet)",
 }
+
+
+def _envf(key):
+    """Optional float from the environment; None when unset (= no band limit)."""
+    v = os.environ.get(key)
+    return float(v) if v not in (None, "") else None
 
 
 def build_misfit(name, dt, iterations, use_gc64=False):
@@ -90,6 +97,14 @@ def build_misfit(name, dt, iterations, use_gc64=False):
         return TravelTimeSafe(dt=dt, beta=10)
     if name == "nim":
         return make_nim(p=1, trans_type="linear", theta=1.0, dt=dt)
+    if name == "tfphase":
+        # Fichtner TF-phase. f_min/f_max default to the full plane; a driver
+        # with a known source band should pass them, since noise-only rows
+        # contribute uniformly-distributed phase, i.e. variance and no signal.
+        from inversion.tf_phase import Misfit_TFPhase
+        return Misfit_TFPhase(dt=dt, win_s=float(os.environ.get("DASFWI_TF_WIN", "1.0")),
+                              f_min=_envf("DASFWI_TF_FMIN"),
+                              f_max=_envf("DASFWI_TF_FMAX"))
     if name == "convsi":
         return ConvolvedWavefieldMisfit(dt=dt)
     raise ValueError(f"unknown misfit {name!r}; choices {MISFITS}")
@@ -108,6 +123,10 @@ MISFIT_SETTINGS = {
     "traveltime": dict(batch_size=5,    checkpoint_segments=2, normalize=True),
     "nim":        dict(batch_size=None, checkpoint_segments=1, normalize=True),
     "convsi":     dict(batch_size=2,    checkpoint_segments=2, normalize=False),
+    # phase-only by construction, so per-trace amplitude normalisation is
+    # redundant -- but harmless, and leaving it ON keeps tfphase directly
+    # comparable with every other cell on the board.
+    "tfphase":    dict(batch_size=None, checkpoint_segments=1, normalize=True),
 }
 
 # ---------------------------------------------------------------------------
