@@ -58,6 +58,31 @@ barely has. Do **not** propose "raise F0 on Marmousi": a 40 m grid resolves
 ~3.8 Hz at 10 ppw and f90 is already 6.25 Hz, so it needs dx≈2.5 m — ~256× cost
 and regenerating the observed data invalidates the whole board.
 
+### 🎯 PARK'S EXACT FWI SETUP — match it, then beat it fairly
+
+Their INV3: **10 m grid, dt 1 ms, 2 s record (nt = 2000), initial model VM2,
+BOTH boreholes 78A-32 + 78B-32 combined, Ricker 10 Hz peak / 20 Hz max,
+FIXED step length 0.1 km/s, 30 iterations.**
+
+| what it settles | consequence for us |
+|---|---|
+| **Grid = 10 m** | confirms the choice I'd recommended on cost. Our cost there: **12.7× a Marmousi cell** → ~8 SU/cell at 300 iters, **~0.8 SU/cell at their 30** |
+| **Source is a 10 Hz Ricker** | it is *assumed*, not measured — so match it for comparability, but `convsi` (source-independent) is a genuine **improvement** over their setup, not a workaround |
+| **Both wells combined** | the Park-comparable run uses both. Our 78A-vs-78B cross-validation becomes an *extra* check, not the primary one |
+| **Fixed step, 30 iterations** | steepest descent, no line search, no Adam |
+
+> ⚠️ **THE COMPARISON TRAP.** Their optimizer is weak by our standards and they
+> run 30 iterations to our 300. **Beating VM3 therefore does NOT by itself
+> validate the switch** — we'd be beating their *budget and optimizer*, not
+> their method. To claim the METHOD won, match iterations and optimizer, or
+> report both matched and unmatched runs. Otherwise the headline result is
+> unfalsifiable and a reviewer will say so.
+
+**BANDWIDTH CORRECTION.** My "FORGE = 4.4 octaves" was the *raw* spectrum
+(6–130 Hz) and is **not** usable for FWI: a 10 m grid caps near 20–30 Hz and
+Park stops at 20. The real ladder is **3–20 Hz = 2.74 octaves**. Still a
+genuine cascade — 2.6× Marmousi's 1.06 — but quote 2.74, not 4.4.
+
 ### ⚠️ FORGE READINESS — TWO BLOCKERS FOUND 2026-08-03
 
 **`run_field_das.py` supports NONE of our method.** Zero occurrences of
