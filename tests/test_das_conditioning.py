@@ -33,16 +33,41 @@ def test_wavelength_span_is_frequency_aware():
     lo = wavelength_span(v_min=1500, f_max=3.0, dx=40)
     hi = wavelength_span(v_min=1500, f_max=6.25, dx=40)
     assert lo > hi
-    assert lo == pytest.approx(0.25 * (1500 / 3.0) / 40, rel=1e-9)      # ~3.1 cells
-    assert hi == pytest.approx(0.25 * (1500 / 6.25) / 40, rel=1e-9)     # ~1.5 cells
+    assert lo == round(0.25 * (1500 / 3.0) / 40)        # 3.125 -> 3 cells
+    assert hi == round(0.25 * (1500 / 6.25) / 40)       # 1.5   -> 2 cells
 
 
 def test_wavelength_span_floor_and_validation():
     # a very high frequency would ask for sub-cell smoothing -> floored
-    assert wavelength_span(1500, 100.0, 40) == 1.0
+    assert wavelength_span(1500, 100.0, 40) == 1
     for bad in ((0, 5, 40), (1500, 0, 40), (1500, 5, 0)):
         with pytest.raises(ValueError):
             wavelength_span(*bad)
+
+
+def test_wavelength_span_is_usable_by_smooth2d():
+    """THE TEST THAT WAS MISSING -- and it cost 16 cluster cells.
+
+    The old version returned a float, which is arithmetically right and
+    operationally useless: smooth2d builds its kernel with
+    `np.linspace(-2*span, 2*span, 2*span + 1)` and linspace's `num` must be an
+    integer, so every conditioned run died at the first gradient with
+    "TypeError: 'float' object cannot be interpreted as an integer".
+
+    The formula was unit-tested in isolation and never handed to its consumer.
+    So this test calls the REAL smooth2d, the way GradProcessor does."""
+    from ADFWI.propagator.gradient_process import smooth2d
+
+    grad = np.random.default_rng(0).standard_normal((60, 100))
+    for f_max in (3.0, 6.25, 20.0, 100.0):
+        span = wavelength_span(1500.0, f_max, 40.0)
+        assert isinstance(span, int) and span >= 1
+        out = smooth2d(np.copy(grad), span=span)         # must not raise
+        assert out.shape == grad.shape and np.isfinite(out).all()
+    # and smoothing must actually smooth: less roughness than the input
+    rough = lambda a: np.abs(np.diff(a, axis=0)).mean()
+    assert rough(smooth2d(np.copy(grad), span=wavelength_span(1500, 3.0, 40))) \
+        < rough(grad)
 
 
 # --------------------------------------------------------------------------- #
@@ -139,3 +164,50 @@ def test_windowing_reduces_the_misfit_of_a_late_mismatch():
     win = float(ConditionedMisfit(inner, dt=DT, window=True, window_pre=0.1,
                                   window_post=0.2).forward(syn, obs))
     assert win < raw
+
+
+# --------------------------------------------------------------------------- #
+# 5. the wrapper must not HIDE the controller API
+# --------------------------------------------------------------------------- #
+def test_conditioning_does_not_hide_the_switch_api():
+    """REGRESSION -- this killed 8 Bridges-2 cells.
+
+    run_switch.py drives the misfit THROUGH whatever wraps it: the blend arms
+    call set_lambda / read .lam, and the ladder arm calls set_stage / reads
+    .active_name. Wrapping in ConditionedMisfit made those invisible, so every
+    conditioned cell raised AttributeError at the FIRST controller update --
+    after printing its setup line, which is exactly where the cluster logs
+    stopped. Conditioning is documented to compose with the switch; this test
+    is what makes that claim real, and it exercises BOTH arms."""
+    from inversion.adaptive_misfit import BlendedMisfit, StagedMisfit
+    from ADFWI.fwi.misfit import Misfit_envelope
+
+    # float32 like the real pipeline -- Misfit_envelope allocates its residual
+    # buffer as float32, so a float64 fixture would fail inside the misfit and
+    # mask what this test is actually about.
+    obs = _gather().float()
+    syn = _gather(shift=0.05).float().clone().requires_grad_(True)
+
+    # --- blend arms: set_lambda / .lam  (run_switch.py:371, 387) -------------
+    blend = BlendedMisfit(Misfit_waveform_L2(dt=DT), Misfit_envelope(dt=DT))
+    m = ConditionedMisfit(blend, dt=DT, window=True, weight=True,
+                          window_pre=0.1, window_post=0.2)
+    for lam in (1.0, 0.0):
+        m.set_lambda(lam)                      # would AttributeError before
+        assert m.lam == lam and blend.lam == lam        # mutates the INNER obj
+    assert torch.isfinite(m.forward(syn, obs)).all()
+
+    # --- ladder arm: set_stage / .active_name  (run_switch.py:366-367) -------
+    staged = StagedMisfit([Misfit_envelope(dt=DT), Misfit_waveform_L2(dt=DT)],
+                          names=["envelope", "l2"])
+    ms = ConditionedMisfit(staged, dt=DT, window=True,
+                           window_pre=0.1, window_post=0.2)
+    ms.set_stage(1)
+    assert ms.active_name == "l2" == staged.active_name
+    ms.set_stage(0)
+    assert ms.active_name == "envelope"
+    assert torch.isfinite(ms.forward(syn, obs)).all()
+
+    # a genuinely missing attribute must still raise, not silently return None
+    with pytest.raises(AttributeError):
+        m.no_such_attribute

@@ -39,7 +39,7 @@ from ADFWI.fwi.misfit import Misfit
 # --------------------------------------------------------------------------- #
 # 1. wavelength-scaled gradient smoothing
 # --------------------------------------------------------------------------- #
-def wavelength_span(v_min, f_max, dx, fraction=0.25, min_span=1.0):
+def wavelength_span(v_min, f_max, dx, fraction=0.25, min_span=1):
     """Gradient-smoothing span in CELLS for a lambda*`fraction` length scale.
 
     lambda = v_min / f_max is the shortest wavelength the data contains, so
@@ -47,12 +47,20 @@ def wavelength_span(v_min, f_max, dx, fraction=0.25, min_span=1.0):
     Returns a span for GradProcessor(grad_smooth=...), which passes it to
     smooth2d.
 
-    Acoustic Marmousi (v_min 1500 m/s, dx 40 m): 6.25 Hz -> 1.5 cells,
-    3 Hz -> 3.1 cells. Low bands get smoothed harder, exactly as they should.
+    Acoustic Marmousi (v_min 1500 m/s, dx 40 m): 6.25 Hz -> 1.5 -> 2 cells,
+    3 Hz -> 3.1 -> 3 cells. Low bands get smoothed harder, as they should.
+
+    RETURNS AN INT, and that is a hard requirement, not a nicety: smooth2d
+    builds its kernel with `np.linspace(-2*span, 2*span, 2*span + 1)`, and
+    linspace's `num` must be an integer. Returning the raw float raised
+    "TypeError: 'float' object cannot be interpreted as an integer" inside the
+    gradient processor and killed every conditioned cell on Bridges-2 at the
+    first gradient. The float was unit-tested against the FORMULA and never
+    once passed to its actual consumer -- see the smooth2d test.
     """
     if not (v_min > 0 and f_max > 0 and dx > 0):
         raise ValueError(f"need positive v_min/f_max/dx, got {v_min}/{f_max}/{dx}")
-    return max(float(min_span), float(fraction) * (v_min / f_max) / dx)
+    return max(int(min_span), int(round(float(fraction) * (v_min / f_max) / dx)))
 
 
 # --------------------------------------------------------------------------- #
@@ -113,6 +121,29 @@ class ConditionedMisfit(Misfit):
         self.window_pre, self.window_post = float(window_pre), float(window_post)
         self.weight_power = float(weight_power)
         self.time_axis = int(time_axis)
+
+    def __getattr__(self, name):
+        """Delegate anything we do not define to the WRAPPED misfit.
+
+        Without this the wrapper is opaque, and wrapping SILENTLY BREAKS the
+        controller: run_switch.py drives the misfit through `set_lambda`,
+        `set_stage`, `active_name` and `lam`, none of which exist here, so every
+        conditioned cell died with AttributeError at the first controller update
+        -- after printing its setup line, which is exactly where the Bridges-2
+        logs stopped. The class docstring claimed it "composes with everything";
+        this is what makes that true rather than aspirational.
+
+        Delegation rather than an explicit forwarding list because that API has
+        grown repeatedly (set_lambda -> set_stage -> active_name -> lam), and an
+        explicit list silently rots the next time it grows.
+
+        Python calls __getattr__ only when normal lookup has already failed, so
+        `forward` and the conditioning helpers still resolve here first. Reading
+        `inner` out of __dict__ avoids recursing when it is not yet assigned.
+        """
+        if name.startswith("__") or "inner" not in self.__dict__:
+            raise AttributeError(name)
+        return getattr(self.__dict__["inner"], name)
 
     @staticmethod
     def _obs_of(a, b):
