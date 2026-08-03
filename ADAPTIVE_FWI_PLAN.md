@@ -58,6 +58,38 @@ barely has. Do **not** propose "raise F0 on Marmousi": a 40 m grid resolves
 ~3.8 Hz at 10 ppw and f90 is already 6.25 Hz, so it needs dx≈2.5 m — ~256× cost
 and regenerating the observed data invalidates the whole board.
 
+### ⚠️ FORGE READINESS — TWO BLOCKERS FOUND 2026-08-03
+
+**`run_field_das.py` supports NONE of our method.** Zero occurrences of
+`SkipSwitch`, `BlendedMisfit`, `cutoff_freq`, `--arm`, `--bands` — it runs a
+single fixed misfit end to end. So at FORGE today we have neither the adaptive
+switch nor multiscale. **Task #48.** Good news: `skip_fraction` needs only
+syn vs obs, no true model, so the switch *does* work without ground truth.
+
+**And multiscale IS available at FORGE** — 4.4 octaves makes a 5/8/12/20 Hz
+ladder a genuine cascade. The Marmousi "cascade hurts" result does **not**
+transfer (see the retraction below). FORGE is the first dataset where the
+cascade and the switch might be complementary rather than redundant, since the
+switch measures skip *per band*.
+
+**Acoustic FORGE recipe.** Misfit: `l2` is OUT — it needs a known wavelet and
+trustworthy amplitudes and FORGE has neither. Use `convsi` (source-independent
+by construction), `gc` (amplitude-insensitive, Park's choice), or `tfphase`
+(phase-only; our QC showed coupling there is a *scalar*, so this is sound
+rather than a compromise). Conditioning: `w` and `g` are defensible on real
+data; **`c` stays OFF** until it weights contributions rather than data.
+
+**Two real risks, both bigger than the misfit choice:**
+1. **The source wavelet is UNKNOWN** — currently a placeholder Ricker at
+   F0=15 Hz. `convsi` sidesteps it; anything else silently inherits a wrong
+   wavelet.
+2. **No ground truth, so acceptance must be defined in advance (task #49).**
+   SSIM is meaningless. Available: data-residual reduction, our own
+   skip-fraction falling, comparison to Park's published Vp — and the
+   strongest, **cross-validating wells 78A-32 and 78B-32**, independent
+   datasets over shared geology whose models should agree where they overlap.
+   Disagreement is evidence of error requiring no truth at all.
+
 ### Recurring failure modes — check these before every launch
 1. **Tag collisions — five occurrences.** Every knob that changes an experiment
    must be in the output tag. Verify tags are distinct *and* don't collide with
