@@ -65,6 +65,15 @@ NT, DT = 2000, 1e-3            # Park: "0.001 s over a total recording time of 2
 #: measured from 318 shots: 161.6 m of relief over ~2960 m, corr(x,z)=+0.994
 RELIEF_M, SECTION_M = 161.6, 2960.0
 DEPTH_M = 2000.0               # DAS-VSP constrains the upper ~1 km; model deeper
+#: Source amplitude. DAS strain rate is (u1-u2)/gauge, so with a unit source
+#: u ~ 1e-12 and the strain rate lands at ~1e-16 -- with the weakest traces in
+#: FLOAT32 DENORMAL territory (<1e-38). ADFWI's _normalize guards traces that
+#: are EXACTLY zero (masked_fill(mask, 1)) but not denormal ones, so dividing by
+#: a ~1e-40 max produced inf/NaN and poisoned the loss. Measured: amp0=1 gives
+#: 11 exact-zero and 129 denormal traces; amp0=1e12 gives ZERO of each and puts
+#: the data at ~1e-4..0.35. FWI with normalised/correlation misfits is
+#: amplitude-invariant, so this is free.
+SRC_AMP = 1e12
 ARMS = ("switch", "fixedk", "l2", "gc", "convsi", "tfphase", "envelope")
 SOLO_ARMS = ("l2", "gc", "convsi", "tfphase")
 OPTIMIZERS = config.LIU_OPTIMIZERS
@@ -110,6 +119,10 @@ def main():
                     help="no air layer (control): the measured 162 m ramp then "
                          "fabricates a free-surface ghost 215 ms late")
     ap.add_argument("--n-shots", type=int, default=12, dest="n_shots")
+    ap.add_argument("--src-amp", type=float, default=SRC_AMP, dest="src_amp",
+                    help="source amplitude. The default lifts DAS strain rate "
+                         "out of float32 DENORMAL range; at amp0=1 the weakest "
+                         "traces underflow and normalisation makes NaN.")
     ap.add_argument("--grad-smooth", default="none", dest="grad_smooth",
                     choices=("none", "wavelength"))
     ap.add_argument("--device", default=None)
@@ -175,7 +188,8 @@ def main():
     # single median row buries 5 of 12 sources IN THE AIR -- they radiate into
     # 340 m/s, the gather is empty, and skip_fraction returns NaN.
     src_z_idx = np.clip((ground[sx] / DZ).astype(int), 0, nz - 1)
-    src = vibroseis_line(NT, DT, args.f0_true, list(sx), list(src_z_idx))
+    src = vibroseis_line(NT, DT, args.f0_true, list(sx), list(src_z_idx),
+                         amp0=args.src_amp)
     print(f"    {len(sx)} sources on the ground, rows "
           f"{src_z_idx.min()}-{src_z_idx.max()}", flush=True)
 
@@ -191,8 +205,18 @@ def main():
                                               nabc=20, snr_db=args.snr,
                                               device=dev, dtype=torch.float32)
     obs_arr = np.asarray(obs.data["strain_rate"])
+    pt = np.abs(obs_arr).max(axis=1)
+    n_zero = int((pt == 0).sum()); n_denorm = int(((pt > 0) & (pt < 1e-30)).sum())
     print(f"    observed {obs_arr.shape} in {time.time()-t_gen:.0f}s, "
-          f"finite={np.isfinite(obs_arr).all()}", flush=True)
+          f"finite={np.isfinite(obs_arr).all()}, "
+          f"per-trace max {pt.min():.2e}..{pt.max():.2e}", flush=True)
+    if n_zero or n_denorm:
+        # Do NOT proceed: normalisation divides by the per-trace max, and a
+        # denormal max yields inf/NaN which then poisons every later iteration.
+        raise SystemExit(
+            f"*** {n_zero} dead and {n_denorm} near-denormal traces. "
+            f"Raise --src-amp (currently {args.src_amp:.0e}) until both are 0, "
+            f"or lengthen the record so every channel is reached.")
 
     # ---- starting model: smoothed truth is NOT allowed here; use a 1-D ramp -
     zc = (np.arange(nz) + 0.5) * DZ
