@@ -24,6 +24,9 @@ case "$KIND" in
     acoustic) SCRIPT=hpc/standalone/run_acoustic_das.py; USE_MO=1 ;;
     elastic)  SCRIPT=hpc/standalone/run_elastic_das.py;  USE_MO=1 ;;
     field)    SCRIPT=hpc/standalone/run_field_das.py;    USE_MO=1 ;;
+    # USE_MO=0: the synthetic driver takes --optimizer but has NO --misfit,
+    # so injecting the positional misfit/optimizer pair would break argparse.
+    forge_syn) SCRIPT=hpc/standalone/run_forge_synthetic.py; USE_MO=0 ;;
     ladder)   SCRIPT=inversion/run_starting_model_ladder.py; USE_MO=0 ;;
     matrix)   SCRIPT=inversion/run_technique_matrix.py;      USE_MO=0 ;;
     *) echo "kind must be genobs|genobs_elastic|calibrate|adaptive|starter|starter_elastic|pipeline|switch|handover|acoustic|elastic|field|ladder|matrix, got: $KIND" >&2; exit 2 ;;

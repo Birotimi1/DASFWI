@@ -53,6 +53,11 @@ check_fixes() {
     grep -q "assuming SKIPPED" "$RUN" || {
         echo "*** a NaN skip would silently mean 'no skip' and disable the" >&2
         echo "    switch. Run: git pull  (99f68f8)" >&2; bad=1; }
+    grep -q "forge_syn) SCRIPT=hpc/standalone/run_forge_synthetic.py" \
+         hpc/condor/run_standalone.sh || {
+        echo "*** run_standalone.sh has no 'forge_syn' kind, so these jobs would" >&2
+        echo "    launch run_field_das.py -- THE WRONG DRIVER -- and die at" >&2
+        echo "    argparse after the queue wait. Run: git pull" >&2; bad=1; }
     [[ $bad -eq 0 ]] || exit 3
     echo "fixes present (per-source depths, gauge = 2*dz, NaN skip fails safe)"
 }
@@ -108,10 +113,10 @@ case "$MODE" in
     # path, and the multiscale path. Smoking only the default would leave the
     # two paths the campaign actually exists to exercise unverified.
     echo "smoke: 3 cells (~4 iterations each)"
-    hpc/slurm/submit.sh field gc adam -- --arm gc --smoke --n-shots 4
-    hpc/slurm/submit.sh field gc adam -- --arm switch --refiner convsi \
+    hpc/slurm/submit.sh forge_syn -- --arm gc --smoke --n-shots 4
+    hpc/slurm/submit.sh forge_syn -- --arm switch --refiner convsi \
         --f0-true 14 --f0-assumed 10 --smoke --n-shots 4
-    hpc/slurm/submit.sh field gc adam -- --arm switch --refiner gc \
+    hpc/slurm/submit.sh forge_syn -- --arm switch --refiner gc \
         --bands 5,8,full --smoke --n-shots 4
     echo
     echo "WAIT, then confirm they RAN rather than merely exited 0:"
@@ -121,7 +126,7 @@ case "$MODE" in
   submit)
     check_fixes; n=0
     while IFS='|' read -r stage a; do
-      hpc/slurm/submit.sh field gc adam -- $a; n=$((n+1))
+      hpc/slurm/submit.sh forge_syn -- $a; n=$((n+1))
     done < <(cells)
     echo; echo "submitted $n cells (~50 SU)."
     echo "read with: python hpc/standalone/rank_forge_synthetic.py"
