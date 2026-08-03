@@ -91,6 +91,41 @@ barely has. Do **not** propose "raise F0 on Marmousi": a 40 m grid resolves
 ~3.8 Hz at 10 ppw and f90 is already 6.25 Hz, so it needs dx≈2.5 m — ~256× cost
 and regenerating the observed data invalidates the whole board.
 
+### 🌊 SURFACE WAVES AT FORGE — and a prediction that reverses a negative result
+
+Park: *"Due to the strong **surface waves** present in the **near-offset** data
+(S2 to S4), the reflected waves are marked only in the far-offset data."*
+
+Rayleigh waves are **elastic**; an **acoustic** FWI cannot model them, so they
+get fitted by **spurious velocity structure** unless muted. The tool for that is
+our **arrival windowing** (`w`, `das_conditioning.arrival_window`) — which
+*hurt* on clean synthetics (−0.028 at skip) for the obvious reason that there
+was no noise or coda to remove.
+
+> **FALSIFIABLE PREDICTION, recorded before the run: `w` HELPS at FORGE where it
+> HURT on Marmousi.** If it doesn't, the windowing implementation is wrong, not
+> the idea. This is the clearest case yet of why a synthetic negative does not
+> transfer: the conditioning A/B tested noise-removal tools on noiseless data.
+
+### 📉 Three concrete gaps from their INV1/INV2 parameters
+
+| | Park | us | consequence |
+|---|---|---|---|
+| **Vp lower bound** | INV2 **1.0** km/s | **1.5** km/s | alluvium can be ~1 km/s, so our clamp **forbids the true near-surface** and the error is absorbed elsewhere (task #52) |
+| **Gradient smoothing** | **200×100 m**, **100×25 m** (anisotropic, 2:1 and 4:1 H:V) | one **isotropic** span | we smooth vertically as hard as horizontally, discarding the **vertical resolution that is the DAS-VSP's whole advantage** (task #52) |
+| **Air layer** | yes | **no** | see task #51 |
+
+All three are near-surface faults, and they compound. The `g` conditioning cost
+~0.13 SSIM on Marmousi — an isotropic span may be part of why, so test
+anisotropic before writing wavelength-scaled smoothing off.
+
+### ✅ A truth-free acceptance number we can match exactly
+
+INV2 reduced the **first-arrival time mismatch by 51.7%**. That needs no true
+model, and it scores **our Route B starter on the same axis as their manually
+picked tomography** — the cleanest possible head-to-head for the transferability
+claim (task #49).
+
 ### 📐 PARK'S FULL WORKFLOW — what it confirms, and one gap on our side
 
 **VM0 = Miller (2019)** → **INV1** traveltime tomography on *3D surface
