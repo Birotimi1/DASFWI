@@ -51,6 +51,7 @@ from forge.proxy_model import (forge_proxy_vp, forge_fibers, vibroseis_line,
 from forge.realistic_synthetic import elastic_observed, mismatched_wavelet
 from inversion import config, near_surface as ns
 from inversion.adaptive_misfit import BlendedMisfit, SkipSwitch
+from inversion.das_conditioning import ConditionedMisfit
 from inversion.metrics import model_scores
 from inversion.skip_diagnostic import skip_fraction
 
@@ -124,6 +125,26 @@ def main():
                     help="source amplitude. The default lifts DAS strain rate "
                          "out of float32 DENORMAL range; at amp0=1 the weakest "
                          "traces underflow and normalisation makes NaN.")
+    ap.add_argument("--window", action="store_true",
+                    help="ARRIVAL WINDOWING -- keep --window-pre/-post around "
+                         "each trace's peak. THE tool for surface waves, which "
+                         "an acoustic code cannot model and therefore explains "
+                         "by inventing near-surface velocity. Measured on this "
+                         "synthetic: shallow error rises 153->229 m/s while the "
+                         "loss falls, i.e. the inversion fits the unmodellable.")
+    ap.add_argument("--window-pre", type=float, default=0.15, dest="window_pre",
+                    help="s before each trace's peak (Noe use 2 s on a longer "
+                         "record; our record is only 2 s total)")
+    ap.add_argument("--window-post", type=float, default=0.5, dest="window_post",
+                    help="s after the peak. Surface waves travel at ~0.9*Vs "
+                         "(~780 m/s here) so they arrive well AFTER the P first "
+                         "break -- a short post-window is what removes them.")
+    ap.add_argument("--channel-weight", action="store_true", dest="channel_weight",
+                    help="amplitude channel weighting. REFUSED with a nonlinear "
+                         "robust term: it weights the DATA, not each channel's "
+                         "CONTRIBUTION, and through envelope^1.5 a weak channel "
+                         "is suppressed 220x harder than asked -- it collapsed "
+                         "the switch 0.742->0.26 on Marmousi.")
     ap.add_argument("--grad-smooth", default="none", dest="grad_smooth",
                     choices=("none", "wavelength"))
     ap.add_argument("--device", default=None)
@@ -155,6 +176,8 @@ def main():
            + ("_flat" if args.flat_datum else "_topoair")
            + ("_b" + args.bands.replace(",", "-") if args.bands else "")
            + ("_fh" if args.bands and args.iter_alloc == "final-heavy" else "")
+           + ("_w" if args.window else "")
+           + ("_c" if args.channel_weight else "")
            + ("_g" if args.grad_smooth != "none" else "")
            + ("_smoke" if args.smoke else ""))
     out_dir = OUT_ROOT / tag
@@ -180,6 +203,13 @@ def main():
                                src_z=ground), flush=True)
     print(f"    arm={arm} refiner={args.refiner} robust={args.robust} "
           f"bands={bands} iters/band={iters_by_band}", flush=True)
+    if args.channel_weight and args.robust == "envelope" and arm not in SOLO_ARMS:
+        raise SystemExit(
+            "*** --channel-weight with an envelope robust term is REFUSED. It "
+            "weights the DATA, so through envelope^1.5 a weak channel is "
+            "suppressed 220x harder than intended; on Marmousi it collapsed the "
+            "switch from 0.742 to 0.26. Fix the weighting to act on per-channel "
+            "CONTRIBUTIONS before enabling this.")
     if args.dry_run:
         print("    dry-run OK -- nothing was run", flush=True)
         return
@@ -257,6 +287,14 @@ def main():
         config.build_misfit(args.refiner, dt=DT, iterations=iterations),
         config.build_misfit(args.robust, dt=DT, iterations=iterations),
         lam=1.0, normalize=True)
+    if args.window or args.channel_weight:
+        loss_fn = ConditionedMisfit(loss_fn, dt=DT, window=args.window,
+                                    weight=args.channel_weight,
+                                    window_pre=args.window_pre,
+                                    window_post=args.window_post)
+        print(f"    conditioning: window={args.window} "
+              f"({args.window_pre}s/{args.window_post}s) "
+              f"channel_weight={args.channel_weight}", flush=True)
     st = config.MISFIT_SETTINGS[args.refiner]
     gp = GradProcessor(grad_mute=n_air,
                        marine_or_land=("marine" if n_air else "land"),
@@ -284,7 +322,8 @@ def main():
                  flat_datum=bool(args.flat_datum), n_air_rows=int(n_air),
                  bands=[("full" if b is None else b) for b in bands],
                  iters_per_band=list(iters_by_band),
-                 grad_smooth=args.grad_smooth,
+                 grad_smooth=args.grad_smooth, window=bool(args.window),
+                 channel_weight=bool(args.channel_weight),
                  ssim=float(sc["ssim"]), mape=float(sc["mape"]),
                  loss_first=float(L[0]) if len(L) else None,
                  loss_last=float(L[-1]) if len(L) else None,

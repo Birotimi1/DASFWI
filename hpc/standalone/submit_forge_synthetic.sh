@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# FORGE SYNTHETIC campaign -- 11 cells on the deadline path to an acoustic result.
+# FORGE SYNTHETIC campaign -- 6 cells: which refiner, and does windowing save the near surface.
 #
 #   hpc/standalone/submit_forge_synthetic.sh --list      # print, run nothing
-#   hpc/standalone/submit_forge_synthetic.sh --dry-run   # validate all 11, no GPU
+#   hpc/standalone/submit_forge_synthetic.sh --dry-run   # validate all 6, no GPU
 #   hpc/standalone/submit_forge_synthetic.sh --smoke     # 3 GPU jobs, ~1 SU
-#   hpc/standalone/submit_forge_synthetic.sh             # submit all 11
+#   hpc/standalone/submit_forge_synthetic.sh             # submit all 6
 #
 # RUN IN THAT ORDER. --dry-run validates configuration and exits before the
 # loop; only --smoke actually executes. Assembling and running this pipeline
@@ -29,9 +29,16 @@
 #                  it help GIVEN the switch" are different questions, and
 #                  conflating them is how Phase B went wrong on Marmousi
 #   3  PARK-MATCH  their setup: gc, 30 iterations, single band              2
+#   4  WINDOWING   MEASURED on the running campaign: loss FALLS while the      3
+#                  SHALLOW error RISES 153->229 m/s and the deep error
+#                  improves -- the acoustic code inventing near-surface
+#                  velocity to explain surface waves it cannot model. Arrival
+#                  windowing is the tool; it HURT on Marmousi (-0.028) because
+#                  noiseless synthetics have nothing to window out. This tests
+#                  the prediction recorded before any of these runs.
 #
 # COST: ~8 SU/cell at 150 iterations (10 m, nt=2000 = 12.7x a Marmousi cell),
-# ~0.8 SU for the 30-iteration Park cells. Total ~40 SU.
+# ~0.8 SU for the 30-iteration Park cells. Total ~45 SU.
 # NOTE: this is a BASH script. `$a` splits on whitespace here; the zsh-only
 # `${=a}` form is a syntax error under bash and has tripped me up repeatedly.
 set -euo pipefail
@@ -64,24 +71,28 @@ check_fixes() {
 
 # stage | args
 cells() {
-# One cell per DISTINCT configuration. Several serve more than one stage --
-# `switch-gc @150` is simultaneously the sanity check, the matched-wavelet gc
-# arm, and the single-scale control for multiscale -- so running it once and
-# reading it three times is correct, not a gap. 11 cells, not 14.
+# STAGE 1 REDONE WITH **SOLO** ARMS. The first attempt used `--arm switch
+# --refiner X`, and the switch NEVER HANDED OVER: measured skip stayed 0.72-0.97
+# against an off_below threshold of 0.45, so lambda sat at 1 (ENVELOPE) for all
+# 150 iterations and the refiner was never evaluated. `switch --refiner l2` and
+# `switch --refiner gc` came back BIT-IDENTICAL, which is how it was caught.
+# A solo arm pins lambda=0, so the misfit under test is the one that runs.
+#
+# 3 refiners x {window off, window on}, all at a MISMATCHED wavelet (14 -> 10),
+# because at FORGE we never know the true source, so mismatched IS the realistic
+# case. 150 iterations, but iter_vp.npz keeps the model trajectory, so the
+# optimal stopping point is recoverable afterwards -- which matters, because the
+# 30-iteration cells beat the 150-iteration ones on shallow error.
 cat <<'EOF'
-0,1,2|--arm switch --refiner gc --f0-true 10 --iterations 150
-0,2|--arm gc --iterations 150
-1|--arm switch --refiner l2 --f0-true 10 --iterations 150
-1|--arm switch --refiner l2 --f0-true 14 --f0-assumed 10 --iterations 150
-1|--arm switch --refiner gc --f0-true 14 --f0-assumed 10 --iterations 150
-1|--arm switch --refiner convsi --f0-true 10 --iterations 150
-1|--arm switch --refiner convsi --f0-true 14 --f0-assumed 10 --iterations 150
-2|--arm gc --bands 5,8,12,full --iterations 150
-2|--arm switch --refiner gc --bands 5,8,12,full --iterations 150
-3|--arm gc --iterations 30
-3|--arm switch --refiner gc --iterations 30
+1|--arm l2 --f0-true 14 --f0-assumed 10 --iterations 150
+1|--arm gc --f0-true 14 --f0-assumed 10 --iterations 150
+1|--arm convsi --f0-true 14 --f0-assumed 10 --iterations 150
+1,4|--arm l2 --f0-true 14 --f0-assumed 10 --iterations 150 --window
+1,4|--arm gc --f0-true 14 --f0-assumed 10 --iterations 150 --window
+1,4|--arm convsi --f0-true 14 --f0-assumed 10 --iterations 150 --window
 EOF
 }
+
 case "$MODE" in
   --list)
     cells | while IFS='|' read -r stage a; do printf '  %-13s %s\n' "$stage" "$a"; done
