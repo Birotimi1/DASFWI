@@ -54,7 +54,21 @@ check_fixes() {
     echo "fixes present (window, lbfgs guard, driver routing).  optimizer=$OPT"
 }
 
+#: The other three optimizers on the ONE cell that matters most (route_b, 150).
+#: Insurance against the synthetic->field transfer being imperfect: the
+#: synthetic has TRUTH and is the right place to CHOOSE, but the field is the
+#: deliverable and its acceptance criteria (first-arrival mismatch reduction,
+#: cross-well agreement) work WITHOUT truth -- so the choice is checkable here
+#: too, for 3 cells instead of 30. Enable with SWEEP=1.
+SWEEP="${SWEEP:-0}"
+
 cells() {
+if [[ "$SWEEP" == "1" ]]; then
+  for o in adam adamw nadam sgd; do
+    [[ "$o" == "$OPT" ]] && continue
+    echo "S|--well 78A-32 --arm convsi --window --topo-air --starting route_b --optimizer $o --iterations 150"
+  done
+fi
 cat <<EOF
 A|--well 78A-32 --arm convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 30
 A|--well 78A-32 --arm convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 150
