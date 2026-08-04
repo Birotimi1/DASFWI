@@ -51,9 +51,18 @@ def _rows(root):
         ns = nair + int(SHALLOW_M / 10.0)
         e = lambda a, s: float(np.abs(a[s] - vt[s]).mean())
         l0, l1 = m.get("loss_first"), m.get("loss_last")
-        # sign-agnostic: gc/correlation losses go NEGATIVE, convsi is ~1e8
-        red = (100.0 * (abs(l0) - abs(l1)) / abs(l0)
-               if l0 not in (None, 0) and l1 is not None else float("nan"))
+        # A PERCENTAGE IS MEANINGLESS WHEN THE LOSS CROSSES ZERO. gc (global
+        # CORRELATION) starts near +9 and ends near -400: more negative is
+        # BETTER, and dividing by |l0|~9 produced "-10097%", which reads as a
+        # catastrophic misfit when gc in fact improved. Percentages are reported
+        # ONLY when the sign is preserved; otherwise the raw endpoints are
+        # shown, because an uninterpretable number is worse than a longer one.
+        if l0 in (None, 0) or l1 is None:
+            red, cross = float("nan"), False
+        elif (l0 > 0) != (l1 > 0):
+            red, cross = float("nan"), True            # sign flip -> no %
+        else:
+            red, cross = 100.0 * (abs(l0) - abs(l1)) / abs(l0), False
         out.append(dict(
             arm=m.get("arm"), win=bool(m.get("window", False)),
             mism=bool(m.get("wavelet_mismatched", False)),
@@ -61,7 +70,8 @@ def _rows(root):
             sh0=e(vi, slice(nair, ns)), sh1=e(vp, slice(nair, ns)),
             dp0=e(vi, slice(ns, None)), dp1=e(vp, slice(ns, None)),
             mape=m.get("mape"), ssim=m.get("ssim"), lossred=red,
-            div=m.get("diverged", False), tag=mf.parent.name))
+            div=m.get("diverged", False), tag=mf.parent.name,
+            l0=l0, l1=l1, cross=cross))
     return out
 
 
@@ -89,9 +99,13 @@ def main():
               f"{'yes' if r['mism'] else '-':4s} {'yes' if r['bands'] else '-':3s} "
               f"{r['it']:4d} {r['sh0']:6.0f}{sa}{r['sh1']:6.0f}  "
               f"{r['dp0']:6.0f}{da}{r['dp1']:6.0f}  {mape:6.1f} "
-              f"{r['lossred']:6.1f}  ({r['ssim']:.3f})"
+              + (f"{'sign':>6s}" if r["cross"] else f"{r['lossred']:6.1f}")
+              + f"  ({r['ssim']:.3f})"
               + ("  *** DIVERGED" if r["div"] else ""))
 
+    print("\n'sign' in dFit = the loss changed sign (gc is a CORRELATION: it "
+          "starts near\nzero and goes negative, so a percentage is "
+          "uninterpretable). Raw values below.")
     print("\n^^ = error INCREASED.  SSIM is bracketed and never sorted on: it "
           "falls\nmonotonically from iteration 0 here, so ranking by it would "
           "say 'never invert'.")
@@ -120,9 +134,12 @@ def main():
     if solo:
         print("\nREFINER under a MISMATCHED wavelet -- this decides the field run:")
         for r in sorted(solo, key=lambda x: x["sh1"]):
+            fit = ("loss %.3g -> %.3g (sign change: %% is meaningless)"
+                   % (r["l0"], r["l1"]) if r["cross"]
+                   else "dFit %+6.1f%%" % r["lossred"])
             print(f"   {r['arm']:8s} {'win' if r['win'] else '   '}  "
                   f"shallow {r['sh1']:6.0f}   deep {r['dp1']:6.0f}   "
-                  f"MAPE {r['mape']:5.1f}%   dFit {r['lossred']:+6.1f}%")
+                  f"MAPE {r['mape']:5.1f}%   {fit}")
         print("   Judge shallow AND deep AND the data fit TOGETHER. A good model "
               "error with a\n   poor data fit (or the reverse) means the "
               "inversion hid the wavelet error --\n   which is precisely what "
