@@ -152,6 +152,14 @@ def main():
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
 
+    if args.optimizer in ("lbfgs", "nlcg"):
+        raise SystemExit(
+            f"*** {args.optimizer} is a SETTLED NEGATIVE: both line-search "
+            "optimizers DIVERGED to NaN on every Route B cell (4/4, ~54 SU "
+            "burned). They need an accurate directional derivative, but with "
+            "shot batching the gradient is STOCHASTIC, so the Wolfe/Armijo "
+            "conditions are evaluated on noise. Adam/SGD do not line-search "
+            "and are unaffected. Use adam, adamw, nadam or sgd.")
     dev = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     iterations = 4 if args.smoke else args.iterations
     f0_asm = args.f0_assumed if args.f0_assumed is not None else args.f0_true

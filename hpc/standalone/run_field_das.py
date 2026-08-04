@@ -284,6 +284,14 @@ def main():
                          "inversion/das_qc.py)")
     args = ap.parse_args()
 
+    if args.optimizer in ("lbfgs", "nlcg"):
+        raise SystemExit(
+            f"*** {args.optimizer} is a SETTLED NEGATIVE: both line-search "
+            "optimizers DIVERGED to NaN on every Route B cell (4/4, ~54 SU "
+            "burned). They need an accurate directional derivative, but with "
+            "shot batching the gradient is STOCHASTIC, so the Wolfe/Armijo "
+            "conditions are evaluated on noise. Adam/SGD do not line-search "
+            "and are unaffected. Use adam, adamw, nadam or sgd.")
     device = pick_device(args.device)
     iterations = 2 if args.smoke else args.iterations
     arm = args.arm or args.misfit

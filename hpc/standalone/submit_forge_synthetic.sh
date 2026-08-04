@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# FORGE SYNTHETIC campaign -- 6 cells: which refiner, and does windowing save the near surface.
+# FORGE SYNTHETIC campaign -- 4 cells: WHICH OPTIMIZER, on FORGE-like data with truth.
 #
 #   hpc/standalone/submit_forge_synthetic.sh --list      # print, run nothing
-#   hpc/standalone/submit_forge_synthetic.sh --dry-run   # validate all 6, no GPU
+#   hpc/standalone/submit_forge_synthetic.sh --dry-run   # validate all 4, no GPU
 #   hpc/standalone/submit_forge_synthetic.sh --smoke     # 3 GPU jobs, ~1 SU
-#   hpc/standalone/submit_forge_synthetic.sh             # submit all 6
+#   hpc/standalone/submit_forge_synthetic.sh             # submit all 4
 #
 # RUN IN THAT ORDER. --dry-run validates configuration and exits before the
 # loop; only --smoke actually executes. Assembling and running this pipeline
@@ -38,7 +38,7 @@
 #                  the prediction recorded before any of these runs.
 #
 # COST: ~8 SU/cell at 150 iterations (10 m, nt=2000 = 12.7x a Marmousi cell),
-# ~0.8 SU for the 30-iteration Park cells. Total ~45 SU.
+# ~0.8 SU for the 30-iteration Park cells. Total ~32 SU.
 # NOTE: this is a BASH script. `$a` splits on whitespace here; the zsh-only
 # `${=a}` form is a syntax error under bash and has tripped me up repeatedly.
 set -euo pipefail
@@ -71,28 +71,25 @@ check_fixes() {
 
 # stage | args
 cells() {
-# STAGE 1 REDONE WITH **SOLO** ARMS. The first attempt used `--arm switch
-# --refiner X`, and the switch NEVER HANDED OVER: measured skip stayed 0.72-0.97
-# against an off_below threshold of 0.45, so lambda sat at 1 (ENVELOPE) for all
-# 150 iterations and the refiner was never evaluated. `switch --refiner l2` and
-# `switch --refiner gc` came back BIT-IDENTICAL, which is how it was caught.
-# A solo arm pins lambda=0, so the misfit under test is the one that runs.
+# STAGE 5: THE OPTIMIZER, which has NEVER been tested on FORGE-like data.
+# Adam was chosen from Marmousi -- inverse-crime ACOUSTIC data. The synthetic is
+# a different regime (elastic mismatch, surface waves, wrong wavelet), so adam
+# winning there does not establish it wins here. Testing it on the SYNTHETIC
+# rather than the field is deliberate: same cost per cell, but here there is
+# TRUTH to decide against.
 #
-# 3 refiners x {window off, window on}, all at a MISMATCHED wavelet (14 -> 10),
-# because at FORGE we never know the true source, so mismatched IS the realistic
-# case. 150 iterations, but iter_vp.npz keeps the model trajectory, so the
-# optimal stopping point is recoverable afterwards -- which matters, because the
-# 30-iteration cells beat the 150-iteration ones on shallow error.
+# Fixed at the decided recipe (convsi + window, mismatched wavelet) so the only
+# thing varying is the optimizer. lbfgs/nlcg are refused by the driver -- both
+# diverged on all 4 Route B cells (~54 SU) because a line search needs an
+# accurate directional derivative and shot batching makes the gradient
+# stochastic.
 cat <<'EOF'
-1|--arm l2 --f0-true 14 --f0-assumed 10 --iterations 150
-1|--arm gc --f0-true 14 --f0-assumed 10 --iterations 150
-1|--arm convsi --f0-true 14 --f0-assumed 10 --iterations 150
-1,4|--arm l2 --f0-true 14 --f0-assumed 10 --iterations 150 --window
-1,4|--arm gc --f0-true 14 --f0-assumed 10 --iterations 150 --window
-1,4|--arm convsi --f0-true 14 --f0-assumed 10 --iterations 150 --window
+5|--arm convsi --window --f0-true 14 --f0-assumed 10 --optimizer adam --iterations 150
+5|--arm convsi --window --f0-true 14 --f0-assumed 10 --optimizer adamw --iterations 150
+5|--arm convsi --window --f0-true 14 --f0-assumed 10 --optimizer nadam --iterations 150
+5|--arm convsi --window --f0-true 14 --f0-assumed 10 --optimizer sgd --iterations 150
 EOF
 }
-
 case "$MODE" in
   --list)
     cells | while IFS='|' read -r stage a; do printf '  %-13s %s\n' "$stage" "$a"; done
