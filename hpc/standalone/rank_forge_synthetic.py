@@ -59,11 +59,21 @@ def _rows(root):
         # shown, because an uninterpretable number is worse than a longer one.
         if l0 in (None, 0) or l1 is None:
             red, cross = float("nan"), False
-        elif (l0 > 0) != (l1 > 0):
-            red, cross = float("nan"), True            # sign flip -> no %
+        elif (l0 > 0) != (l1 > 0) or abs(l0) < 0.05 * abs(l1):
+            # sign flip OR a near-zero start: |l0|=7.7 against |l1|=404 gave
+            # "-5181%", which is the same disease as the sign crossing. Any
+            # loss whose start is tiny beside its end has no meaningful
+            # percentage.
+            red, cross = float("nan"), True
         else:
             red, cross = 100.0 * (abs(l0) - abs(l1)) / abs(l0), False
+        # |vp_final - vp_init| / |vp_init|: did the inversion actually DO
+        # anything? A low model error achieved by barely moving is "least wrong
+        # because it did least", not accuracy -- and it would not survive field
+        # data, where the model genuinely has to move.
+        upd = float(np.abs(vp - vi).mean() / max(np.abs(vi).mean(), 1e-30)) * 100
         out.append(dict(
+            upd=upd,
             arm=m.get("arm"), win=bool(m.get("window", False)),
             mism=bool(m.get("wavelet_mismatched", False)),
             bands=len(m.get("bands", [None])) > 1, it=m["iterations_done"],
@@ -100,7 +110,7 @@ def main():
               f"{r['it']:4d} {r['sh0']:6.0f}{sa}{r['sh1']:6.0f}  "
               f"{r['dp0']:6.0f}{da}{r['dp1']:6.0f}  {mape:6.1f} "
               + (f"{'sign':>6s}" if r["cross"] else f"{r['lossred']:6.1f}")
-              + f"  ({r['ssim']:.3f})"
+              + f" {r['upd']:7.2f}  ({r['ssim']:.3f})"
               + ("  *** DIVERGED" if r["div"] else ""))
 
     print("\n'sign' in dFit = the loss changed sign (gc is a CORRELATION: it "
@@ -139,7 +149,16 @@ def main():
                    else "dFit %+6.1f%%" % r["lossred"])
             print(f"   {r['arm']:8s} {'win' if r['win'] else '   '}  "
                   f"shallow {r['sh1']:6.0f}   deep {r['dp1']:6.0f}   "
-                  f"MAPE {r['mape']:5.1f}%   {fit}")
+                  f"moved {r['upd']:5.2f}%   {fit}")
+        mv = {r["arm"]: r["upd"] for r in solo if not r["win"]}
+        if len(mv) > 1:
+            lo = min(mv, key=mv.get)
+            print(f"\n   MOVED%: {', '.join(f'{k} {v:.2f}' for k, v in sorted(mv.items(), key=lambda x: x[1]))}")
+            print(f"   `{lo}` moved the model LEAST. If it also has the lowest "
+                  f"shallow error, that is\n   INACTION, not accuracy -- it "
+                  f"cannot fit a wrong-wavelet dataset so it barely\n   updates, "
+                  f"and barely updating cannot damage. On field data the model "
+                  f"MUST move.")
         print("   Judge shallow AND deep AND the data fit TOGETHER. A good model "
               "error with a\n   poor data fit (or the reverse) means the "
               "inversion hid the wavelet error --\n   which is precisely what "
