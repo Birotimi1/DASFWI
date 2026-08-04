@@ -74,7 +74,8 @@ def _rows(root):
         upd = float(np.abs(vp - vi).mean() / max(np.abs(vi).mean(), 1e-30)) * 100
         out.append(dict(
             upd=upd,
-            arm=m.get("arm"), win=bool(m.get("window", False)),
+            arm=m.get("arm"), opt=m.get("optimizer", "?"),
+            win=bool(m.get("window", False)),
             mism=bool(m.get("wavelet_mismatched", False)),
             bands=len(m.get("bands", [None])) > 1, it=m["iterations_done"],
             sh0=e(vi, slice(nair, ns)), sh1=e(vp, slice(nair, ns)),
@@ -97,7 +98,7 @@ def main():
         rows = [r for r in rows if r["mism"]]
     rows.sort(key=lambda r: r["sh1"])          # rank on SHALLOW error
 
-    print(f"{'arm':8s} {'win':4s} {'mis':4s} {'ms':3s} {'it':>4s} "
+    print(f"{'arm':8s} {'optim':6s} {'win':4s} {'mis':4s} {'ms':3s} {'it':>4s} "
           f"{'SHALLOW err':>15s} {'DEEP err':>15s} {'MAPE%':>6s} "
           f"{'dFit%':>6s}  (ssim)")
     print("-" * 92)
@@ -105,7 +106,7 @@ def main():
         sa = "->" if r["sh1"] <= r["sh0"] else "^^"       # ^^ = got WORSE
         da = "->" if r["dp1"] <= r["dp0"] else "^^"
         mape = r["mape"] if r["mape"] is not None else float("nan")
-        print(f"{str(r['arm']):8s} {'yes' if r['win'] else '-':4s} "
+        print(f"{str(r['arm']):8s} {str(r['opt']):6s} {'yes' if r['win'] else '-':4s} "
               f"{'yes' if r['mism'] else '-':4s} {'yes' if r['bands'] else '-':3s} "
               f"{r['it']:4d} {r['sh0']:6.0f}{sa}{r['sh1']:6.0f}  "
               f"{r['dp0']:6.0f}{da}{r['dp1']:6.0f}  {mape:6.1f} "
@@ -147,9 +148,30 @@ def main():
             fit = ("loss %.3g -> %.3g (sign change: %% is meaningless)"
                    % (r["l0"], r["l1"]) if r["cross"]
                    else "dFit %+6.1f%%" % r["lossred"])
-            print(f"   {r['arm']:8s} {'win' if r['win'] else '   '}  "
+            print(f"   {r['arm']:8s} {str(r['opt']):6s} "
+                  f"{'win' if r['win'] else '   '}  "
                   f"shallow {r['sh1']:6.0f}   deep {r['dp1']:6.0f}   "
                   f"moved {r['upd']:5.2f}%   {fit}")
+        # OPTIMIZER SWEEP: cells identical except for the optimizer
+        groups = {}
+        for r in rows:
+            k = (r["arm"], r["win"], r["mism"], r["bands"], r["it"])
+            groups.setdefault(k, []).append(r)
+        sweep = [g for g in groups.values() if len(g) > 1
+                 and len({x["opt"] for x in g}) > 1]
+        if sweep:
+            print("\nOPTIMIZER SWEEP (cells identical but for the optimizer):")
+            for g in sweep:
+                a = g[0]
+                print(f"   {a['arm']}{' +win' if a['win'] else ''} "
+                      f"i{a['it']}:")
+                for r in sorted(g, key=lambda x: x["sh1"]):
+                    print(f"      {str(r['opt']):7s} shallow {r['sh1']:6.0f}   "
+                          f"deep {r['dp1']:6.0f}   moved {r['upd']:5.2f}%   "
+                          f"dFit {r['lossred']:+6.1f}%")
+                best = min(g, key=lambda x: x["sh1"])
+                print(f"      -> BEST: {best['opt']}  "
+                      f"(export DASFWI_OPT={best['opt']})")
         mv = {r["arm"]: r["upd"] for r in solo if not r["win"]}
         if len(mv) > 1:
             lo = min(mv, key=mv.get)
