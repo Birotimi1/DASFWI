@@ -17,7 +17,7 @@ from run_field_das import parse_bands, allocate_iters, ARMS, SOLO_ARMS  # noqa: 
 def _tag(well="78A-32", arm="gc", refiner="gc", robust="envelope",
          optimizer="adam", starting="gradient", bands=None,
          iter_alloc="final-heavy", z_air=0.0, topo_air=False,
-         grad_smooth="none", smoke=False):
+         window=False, grad_smooth="none", smoke=False):
     """Mirror of the driver's tag construction (kept in step by the tests)."""
     if arm in SOLO_ARMS:
         refiner = arm
@@ -28,6 +28,7 @@ def _tag(well="78A-32", arm="gc", refiner="gc", robust="envelope",
             + ("_b" + bands.replace(",", "-") if bands else "")
             + ("_fh" if bands and iter_alloc == "final-heavy" else "")
             + ("_topoair" if topo_air else "_air" if z_air > 0 else "")
+            + ("_w" if window else "")
             + ("_g" if grad_smooth != "none" else "")
             + ("_smoke" if smoke else ""))
 
@@ -38,7 +39,7 @@ def test_every_knob_reaches_the_tag():
     base = _tag()
     for kw in (dict(arm="switch"), dict(optimizer="sgd"),
                dict(starting="route_b"), dict(bands="5,8,full"),
-               dict(z_air=100.0), dict(topo_air=True),
+               dict(z_air=100.0), dict(topo_air=True), dict(window=True),
                dict(grad_smooth="wavelength"),
                dict(well="78B-32"), dict(smoke=True)):
         assert _tag(**kw) != base, f"{kw} does not reach the tag"
@@ -114,3 +115,12 @@ def test_topographic_air_is_distinguishable_from_a_flat_slab():
     the surface. Sharing a tag would conflate two different experiments."""
     assert _tag(topo_air=True) != _tag(z_air=162.0)
     assert "_topoair" in _tag(topo_air=True)
+
+
+def test_windowing_reaches_the_field_tag():
+    """The single most important thing the FORGE synthetic taught us -- Park
+    report strong surface waves an acoustic code cannot model, and windowing
+    improved the shallow model for every refiner. It was MISSING from the field
+    driver entirely until 2026-08-04, so the decided recipe could not be run."""
+    assert _tag(window=True) != _tag()
+    assert "_w" in _tag(window=True)

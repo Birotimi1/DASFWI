@@ -68,6 +68,7 @@ from inversion import config          # single source of truth for techniques
 from inversion.adaptive_misfit import BlendedMisfit, SkipSwitch
 from inversion.skip_diagnostic import skip_fraction
 from inversion import near_surface as ns
+from inversion.das_conditioning import ConditionedMisfit
 from forge.field_loader import load_forge_field, summarize
 
 # ============================================================================
@@ -247,6 +248,25 @@ def main():
                     help="air-layer thickness (m). MEASURE THE RELIEF FIRST: "
                          "if it is < lambda/4 the flat datum is fine and this "
                          "only costs grid. 0 = no air layer.")
+    ap.add_argument("--window", action="store_true",
+                    help="ARRIVAL WINDOWING. Park report STRONG SURFACE WAVES "
+                         "in the near-offset FORGE gathers, which an ACOUSTIC "
+                         "code cannot model and therefore explains by inventing "
+                         "near-surface velocity. MEASURED on the FORGE "
+                         "synthetic: windowing improves the shallow model for "
+                         "every refiner (convsi -54, gc -26, l2 -1 m/s). It "
+                         "HURT on Marmousi only because noiseless inverse-crime "
+                         "data has no surface waves to remove.")
+    ap.add_argument("--window-pre", type=float, default=0.15, dest="window_pre")
+    ap.add_argument("--window-post", type=float, default=0.5, dest="window_post",
+                    help="s after the peak. Surface waves are SLOW (~0.9*Vs) so "
+                         "they arrive well after the P break; a short "
+                         "post-window is what removes them.")
+    ap.add_argument("--channel-weight", action="store_true", dest="channel_weight",
+                    help="REFUSED with a nonlinear robust term -- it weights the "
+                         "DATA not each channel's CONTRIBUTION, and through "
+                         "envelope^1.5 suppresses a weak channel 220x harder "
+                         "than asked (collapsed the switch 0.742->0.26).")
     ap.add_argument("--topo-air", action="store_true", dest="topo_air",
                     help="air layer FOLLOWING the measured topography (the "
                          "FORGE surface is a 162 m ramp, so a uniform slab is "
@@ -281,6 +301,8 @@ def main():
            + ("_b" + args.bands.replace(",", "-") if args.bands else "")
            + ("_fh" if args.bands and args.iter_alloc == "final-heavy" else "")
            + ("_air" if args.z_air > 0 else "")
+           + ("_w" if args.window else "")
+           + ("_c" if args.channel_weight else "")
            + ("_g" if args.grad_smooth != "none" else "")
            + ("_smoke" if args.smoke else ""))
     out_dir = OUT_ROOT / tag
@@ -419,6 +441,20 @@ def main():
     loss_fn = BlendedMisfit(build_misfit(args.refiner, iterations, g["dt"], f_eff),
                             build_misfit(args.robust, iterations, g["dt"], f_eff),
                             lam=1.0, normalize=True)
+    if args.channel_weight and args.robust == "envelope" and arm not in SOLO_ARMS:
+        raise SystemExit(
+            "*** --channel-weight with an envelope robust term is REFUSED: it "
+            "weights the DATA, so through envelope^1.5 a weak channel is "
+            "suppressed 220x harder than intended. It collapsed the switch from "
+            "0.742 to 0.26 on Marmousi.")
+    if args.window or args.channel_weight:
+        loss_fn = ConditionedMisfit(loss_fn, dt=g["dt"], window=args.window,
+                                    weight=args.channel_weight,
+                                    window_pre=args.window_pre,
+                                    window_post=args.window_post)
+        print(f"    conditioning: window={args.window} "
+              f"({args.window_pre}s/{args.window_post}s) "
+              f"channel_weight={args.channel_weight}", flush=True)
     ctrl = SkipSwitch() if arm == "switch" else None
     obs_arr = np.asarray(bundle["obs_data"].data["strain_rate"])
 
@@ -472,6 +508,7 @@ def main():
                                            for b in bands],
             iters_per_band=list(iters_by_band), iter_alloc=args.iter_alloc,
             z_air=args.z_air, n_air_rows=int(n_air),
+            window=bool(args.window), channel_weight=bool(args.channel_weight),
             vp_bound=list(VP_BOUND), grad_smooth=args.grad_smooth,
             handovers=(ctrl.handbacks if ctrl is not None else None),
             trajectory=traj)
