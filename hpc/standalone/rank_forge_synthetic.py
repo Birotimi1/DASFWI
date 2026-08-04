@@ -1,34 +1,43 @@
-"""Read the FORGE synthetic campaign, INCLUDING the optimal stopping point.
+"""Read the FORGE synthetic campaign.
 
-The campaign's headline finding is that shallow error grows MONOTONICALLY with
-iterations while the loss falls -- the acoustic code inventing near-surface
-velocity to explain surface waves it cannot model. The 30-iteration cells beat
-the 150-iteration ones. So the final model is NOT the best model, and reporting
-only the endpoint would hide that. `iter_vp.npz` keeps the trajectory, so the
-best iteration is recoverable after the fact.
+>>> SSIM IS DEGENERATE ON THIS PROBLEM -- DO NOT RANK BY IT. <<<
+Measured across all 16 cells: SSIM falls monotonically from iteration 0, so
+"best SSIM" trivially selects the STARTING MODEL and the metric says "never
+invert". A smooth 1-D ramp is structurally similar to a smooth layered truth, so
+ANY added detail -- right or wrong -- lowers SSIM. It is reported last, in
+brackets, and never sorted on. My first version led with it and produced a table
+whose headline read "@it 0" for every cell, which is worse than useless.
+
+RANK ON DEPTH-RESOLVED ERROR, because the campaign's central finding is
+depth-dependent: the acoustic inversion CORRUPTS the shallow section (fitting
+surface waves it cannot model) while genuinely improving at depth. One number
+cannot express that, and any single-number ranking hides it.
+
+The DATA-FIT change is printed alongside, because a low model error with a poor
+data fit -- or the reverse -- is the signature of an inversion that has absorbed
+an error somewhere invisible. That matters most for `l2` under a mismatched
+wavelet: L2 fits amplitude AND phase, so it can bury the wavelet error in the
+model and still look good on a single metric.
 
     python hpc/standalone/rank_forge_synthetic.py
+    python hpc/standalone/rank_forge_synthetic.py --mismatched-only
 """
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
 
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from inversion.metrics import model_scores            # noqa: E402
 
 ROOT = Path(os.environ.get("DASFWI_RESULTS", "results")) / "forge_synthetic"
+SHALLOW_M = 400.0          # below the ground: where surface waves do the damage
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--results", default=None)
-    args = ap.parse_args()
-    root = Path(args.results) if args.results else ROOT
-    rows = []
+def _rows(root):
+    out = []
     for mf in sorted(root.glob("*/metrics.json")):
         if "smoke" in mf.parent.name:
             continue
@@ -39,53 +48,85 @@ def main():
         d = np.load(npz)
         vt, vi, vp = d["vp_true"], d["vp_init"], d["vp"]
         nair = int(m.get("n_air_rows", 0))
-        sh = slice(nair, nair + 40)                    # ~400 m below ground
-        err = lambda a, s: float(np.abs(a[s] - vt[s]).mean())
-        # best iteration from the cached trajectory, if present
-        best_it, best_ssim = m["iterations_done"], m["ssim"]
-        tj = mf.parent / "iter_vp.npz"
-        if tj.is_file():
-            try:
-                traj = np.load(tj)["data"]
-                if traj.ndim == 3 and len(traj) > 1:
-                    ss = [model_scores(vt, f)["ssim"] for f in traj]
-                    k = int(np.nanargmax(ss))
-                    best_ssim = float(ss[k])
-                    best_it = int(round(k * m["iterations_done"] / max(len(ss) - 1, 1)))
-            except Exception:                          # noqa: BLE001
-                pass
-        rows.append(dict(tag=mf.parent.name, arm=m.get("arm"),
-                         window=m.get("window", False),
-                         mism=m.get("wavelet_mismatched", False),
-                         it=m["iterations_done"], ssim=m["ssim"],
-                         best_ssim=best_ssim, best_it=best_it,
-                         sh0=err(vi, sh), sh1=err(vp, sh),
-                         div=m.get("diverged", False)))
+        ns = nair + int(SHALLOW_M / 10.0)
+        e = lambda a, s: float(np.abs(a[s] - vt[s]).mean())
+        l0, l1 = m.get("loss_first"), m.get("loss_last")
+        # sign-agnostic: gc/correlation losses go NEGATIVE, convsi is ~1e8
+        red = (100.0 * (abs(l0) - abs(l1)) / abs(l0)
+               if l0 not in (None, 0) and l1 is not None else float("nan"))
+        out.append(dict(
+            arm=m.get("arm"), win=bool(m.get("window", False)),
+            mism=bool(m.get("wavelet_mismatched", False)),
+            bands=len(m.get("bands", [None])) > 1, it=m["iterations_done"],
+            sh0=e(vi, slice(nair, ns)), sh1=e(vp, slice(nair, ns)),
+            dp0=e(vi, slice(ns, None)), dp1=e(vp, slice(ns, None)),
+            mape=m.get("mape"), ssim=m.get("ssim"), lossred=red,
+            div=m.get("diverged", False), tag=mf.parent.name))
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--results", default=None)
+    ap.add_argument("--mismatched-only", action="store_true", dest="mism_only")
+    args = ap.parse_args()
+    rows = _rows(Path(args.results) if args.results else ROOT)
     if not rows:
-        return print(f"no cells in {root}")
-    rows.sort(key=lambda r: -r["best_ssim"])
-    print(f"{'arm':9s} {'win':4s} {'mism':5s} {'SSIM_end':>8s} {'SSIM_best':>9s} "
-          f"{'@it':>5s} {'shallow err':>16s}")
-    print("-" * 72)
+        return print("no cells found")
+    if args.mism_only:
+        rows = [r for r in rows if r["mism"]]
+    rows.sort(key=lambda r: r["sh1"])          # rank on SHALLOW error
+
+    print(f"{'arm':8s} {'win':4s} {'mis':4s} {'ms':3s} {'it':>4s} "
+          f"{'SHALLOW err':>15s} {'DEEP err':>15s} {'MAPE%':>6s} "
+          f"{'dFit%':>6s}  (ssim)")
+    print("-" * 92)
     for r in rows:
-        arrow = "WORSE" if r["sh1"] > r["sh0"] else "better"
-        print(f"{str(r['arm']):9s} {'yes' if r['window'] else '-':4s} "
-              f"{'yes' if r['mism'] else '-':5s} {r['ssim']:8.3f} "
-              f"{r['best_ssim']:9.3f} {r['best_it']:5d} "
-              f"{r['sh0']:6.0f}->{r['sh1']:6.0f} {arrow:>6s}"
-              + ("   *** DIVERGED" if r["div"] else ""))
-    print("\nSSIM_best vs SSIM_end: if best << end the run is DEGRADING, and the")
-    print("stopping point matters more than the misfit choice.")
-    w = [r for r in rows if r["window"]]; nw = [r for r in rows if not r["window"]]
-    if w and nw:
-        dw = np.mean([r["sh1"] - r["sh0"] for r in w])
-        dn = np.mean([r["sh1"] - r["sh0"] for r in nw])
-        print(f"\nWINDOWING: mean shallow change {dn:+.0f} m/s without, "
-              f"{dw:+.0f} m/s with -> windowing "
-              f"{'HELPS' if dw < dn else 'does NOT help'} here.")
-        print("(Prediction recorded before any FORGE run: `w` helps here where "
-              "it HURT on Marmousi, because a noiseless synthetic has no "
-              "surface waves to window out.)")
+        sa = "->" if r["sh1"] <= r["sh0"] else "^^"       # ^^ = got WORSE
+        da = "->" if r["dp1"] <= r["dp0"] else "^^"
+        mape = r["mape"] if r["mape"] is not None else float("nan")
+        print(f"{str(r['arm']):8s} {'yes' if r['win'] else '-':4s} "
+              f"{'yes' if r['mism'] else '-':4s} {'yes' if r['bands'] else '-':3s} "
+              f"{r['it']:4d} {r['sh0']:6.0f}{sa}{r['sh1']:6.0f}  "
+              f"{r['dp0']:6.0f}{da}{r['dp1']:6.0f}  {mape:6.1f} "
+              f"{r['lossred']:6.1f}  ({r['ssim']:.3f})"
+              + ("  *** DIVERGED" if r["div"] else ""))
+
+    print("\n^^ = error INCREASED.  SSIM is bracketed and never sorted on: it "
+          "falls\nmonotonically from iteration 0 here, so ranking by it would "
+          "say 'never invert'.")
+
+    print("\nWINDOWING, paired per refiner (an unpaired cell is not a comparison):")
+    byref = {}
+    for r in rows:
+        if r["mism"] and not r["bands"] and r["arm"] in ("l2", "gc", "convsi"):
+            byref.setdefault(r["arm"], {})[r["win"]] = r
+    paired = False
+    for arm, p in sorted(byref.items()):
+        if True in p and False in p:
+            paired = True
+            d = p[True]["sh1"] - p[False]["sh1"]
+            print(f"   {arm:8s} shallow {p[False]['sh1']:6.0f} -> "
+                  f"{p[True]['sh1']:6.0f}  ({d:+.0f} m/s)  "
+                  f"{'HELPS' if d < 0 else 'NO HELP'}")
+        else:
+            print(f"   {arm:8s} INCOMPLETE -- "
+                  f"{'window' if False in p else 'no-window'} cell still running")
+    if not paired:
+        print("   (no complete pairs yet)")
+
+    solo = [r for r in rows if r["arm"] in ("l2", "gc", "convsi")
+            and r["mism"] and not r["bands"]]
+    if solo:
+        print("\nREFINER under a MISMATCHED wavelet -- this decides the field run:")
+        for r in sorted(solo, key=lambda x: x["sh1"]):
+            print(f"   {r['arm']:8s} {'win' if r['win'] else '   '}  "
+                  f"shallow {r['sh1']:6.0f}   deep {r['dp1']:6.0f}   "
+                  f"MAPE {r['mape']:5.1f}%   dFit {r['lossred']:+6.1f}%")
+        print("   Judge shallow AND deep AND the data fit TOGETHER. A good model "
+              "error with a\n   poor data fit (or the reverse) means the "
+              "inversion hid the wavelet error --\n   which is precisely what "
+              "l2 can do, because it fits amplitude as well as phase.")
 
 
 if __name__ == "__main__":
