@@ -111,6 +111,47 @@ barely has. Do **not** propose "raise F0 on Marmousi": a 40 m grid resolves
 ~3.8 Hz at 10 ppw and f90 is already 6.25 Hz, so it needs dx≈2.5 m — ~256× cost
 and regenerating the observed data invalidates the whole board.
 
+### ✅ THE FIELD RECIPE, DECIDED BY MEASUREMENT (2026-08-04)
+
+FORGE synthetic: elastic data, acoustic inversion, 162 m ramp, noise, wrong
+wavelet. Solo arms, so the misfit under test actually runs.
+
+> ## `convsi` + WINDOWING + STOP EARLY
+
+| refiner | shallow | moved% | dFit | **fit / % moved** |
+|---|---|---|---|---|
+| **convsi + win** | 209 | **3.88** | **+78.8%** | **20.3** |
+| convsi | 263 | 6.16 | +66.3% | 10.8 |
+| l2 + win | **196** | 4.72 | +31.6% | 6.7 |
+| l2 | 197 | 4.91 | +23.4% | 4.8 |
+| gc + win | 235 | 6.38 | *(3.09 → −315)* | — |
+| gc | 261 | 7.33 | *(5.52 → −345)* | — |
+
+**`l2` has the lowest shallow error and that is NOT a win.** It moves the model
+*more* than `convsi+win` while fitting the data **2.5× worse** — its model is
+barely constrained by the data. The deciding metric is **fit per unit of
+movement**, where `convsi+win` is **3× better**. Exactly what theory predicts:
+`convsi` is source-independent so a wrong wavelet cancels, whereas `l2` fits
+amplitude *and* phase and cannot reconcile one.
+
+**Park's `gc` is the worst of the three** under a wrong wavelet (235–261). They
+assume a 10 Hz Ricker and never test the sensitivity.
+
+**Windowing helps all three, paired**: convsi −54, gc −26, l2 −1 m/s.
+**Prediction confirmed** — recorded in writing before any FORGE run.
+
+> ### ⏱ AND THE BIGGEST PRACTICAL FINDING: EARLY STOPPING BEATS EVERY MISFIT
+> Shallow error grows **monotonically** with iterations while the loss falls —
+> the acoustic code inventing near-surface velocity to explain **surface waves
+> it cannot model**. 30-iteration cells reach shallow **173–186**; every
+> 150-iteration cell is ≥ 196. **Park's 30 iterations may be protective, not a
+> budget limit.** Nothing eliminates the damage; windowing and early stopping
+> only reduce it.
+
+**METRIC WARNINGS.** SSIM is **degenerate** here — it falls monotonically from
+iteration 0, so ranking on it says "never invert"; rank on depth-resolved error.
+And no percentage change for `gc`, whose correlation loss crosses zero.
+
 ### 🌊 SURFACE WAVES AT FORGE — and a prediction that reverses a negative result
 
 Park: *"Due to the strong **surface waves** present in the **near-offset** data
