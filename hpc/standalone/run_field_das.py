@@ -277,6 +277,13 @@ def main():
                          "(Park use 2:1 and 4:1); isotropic discards the "
                          "vertical resolution a VSP exists to provide")
     ap.add_argument("--smoke", action="store_true", help="2-iteration check")
+    ap.add_argument("--dry-run", action="store_true", dest="dry_run",
+                    help="validate the configuration and EXIT before loading "
+                         "any data. Catches argparse errors, refused "
+                         "optimizer/conditioning combinations and tag "
+                         "collisions without a GPU or the SEG-Y -- this driver "
+                         "had no dry-run at all, so a 13-cell campaign could "
+                         "not be checked before submission.")
     ap.add_argument("--qc", default="on", choices=("on", "off", "strict"),
                     help="DAS waveform-shape QC before inverting. 'strict' "
                          "ABORTS if coupling is acting as a per-channel filter, "
@@ -304,7 +311,14 @@ def main():
     # (two configurations writing to one directory) has appeared five times.
     pair = "" if args.refiner in ("l2", arm) else f"-{args.refiner}"
     rb = "" if args.robust == "envelope" or arm in SOLO_ARMS else f"+{args.robust}"
+    # ITERATIONS IN THE TAG. Without it the 30- and 150-iteration cells render
+    # the same directory and the second silently overwrites the first --
+    # destroying precisely the early-vs-late comparison the campaign exists to
+    # make, since the synthetic showed shallow error grows with iterations.
+    # Seventh occurrence of this bug class; caught by the campaign's own
+    # tag-uniqueness check rather than by review.
     tag = ("field_" + args.well + "_" + arm + pair + rb + "_" + args.optimizer
+           + f"_i{iterations}"
            + "_" + args.starting
            + ("_b" + args.bands.replace(",", "-") if args.bands else "")
            + ("_fh" if args.bands and args.iter_alloc == "final-heavy" else "")
@@ -317,6 +331,14 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"=== FORGE field {tag} on {device}, {iterations} iterations ===",
           flush=True)
+
+    if args.dry_run:
+        print(f"    dry-run OK: {tag}", flush=True)
+        print(f"      arm={arm} refiner={args.refiner} robust={args.robust} "
+              f"start={args.starting} opt={args.optimizer} iters={iterations} "
+              f"bands={bands} window={args.window} topo_air={args.topo_air}",
+              flush=True)
+        return
 
     # [3] load real field data (strain rate) + geometry
     bundle = load_forge_field(well=args.well, n_shots=args.shots,

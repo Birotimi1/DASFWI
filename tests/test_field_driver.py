@@ -15,7 +15,7 @@ from run_field_das import parse_bands, allocate_iters, ARMS, SOLO_ARMS  # noqa: 
 
 
 def _tag(well="78A-32", arm="gc", refiner="gc", robust="envelope",
-         optimizer="adam", starting="gradient", bands=None,
+         optimizer="adam", iterations=150, starting="gradient", bands=None,
          iter_alloc="final-heavy", z_air=0.0, topo_air=False,
          window=False, grad_smooth="none", smoke=False):
     """Mirror of the driver's tag construction (kept in step by the tests)."""
@@ -24,6 +24,7 @@ def _tag(well="78A-32", arm="gc", refiner="gc", robust="envelope",
     pair = "" if refiner in ("l2", arm) else f"-{refiner}"
     rb = "" if robust == "envelope" or arm in SOLO_ARMS else f"+{robust}"
     return ("field_" + well + "_" + arm + pair + rb + "_" + optimizer
+            + f"_i{iterations}"
             + "_" + starting
             + ("_b" + bands.replace(",", "-") if bands else "")
             + ("_fh" if bands and iter_alloc == "final-heavy" else "")
@@ -124,3 +125,27 @@ def test_windowing_reaches_the_field_tag():
     driver entirely until 2026-08-04, so the decided recipe could not be run."""
     assert _tag(window=True) != _tag()
     assert "_w" in _tag(window=True)
+
+
+def test_iterations_reach_the_field_tag():
+    """SEVENTH occurrence of the tag-collision class. The campaign runs BOTH 30
+    and 150 iterations because the synthetic showed shallow error grows with
+    iteration count -- so a shared tag would have silently destroyed the exact
+    early-vs-late comparison the campaign exists to make."""
+    assert _tag(iterations=30) != _tag(iterations=150)
+    assert "_i30" in _tag(iterations=30)
+
+
+def test_a_full_field_campaign_has_no_duplicate_tags():
+    seen = {}
+    for well in ("78A-32", "78B-32"):
+        for arm in ("convsi", "gc", "switch"):
+            for start in ("route_b", "traveltime"):
+                for it in (30, 150):
+                    for win in (False, True):
+                        t = _tag(well=well, arm=arm, starting=start,
+                                 iterations=it, window=win)
+                        key = (well, arm, start, it, win)
+                        assert t not in seen, f"COLLISION {t}: {seen[t]} vs {key}"
+                        seen[t] = key
+    assert len(seen) == 2 * 3 * 2 * 2 * 2

@@ -89,7 +89,7 @@ case "$MODE" in
   --dry-run)
     check_fixes; fail=0
     while IFS='|' read -r g a; do
-      if out=$(python hpc/standalone/run_field_das.py $a --smoke --dry-run 2>&1); then
+      if out=$(python hpc/standalone/run_field_das.py $a --dry-run 2>&1); then
         printf '  ok   %-2s %s\n' "$g" "$(printf '%s' "$out" | grep -o 'field_[^ ]*' | head -1)"
       else
         printf '  FAIL %-2s %s\n' "$g" "$a"
@@ -97,7 +97,16 @@ case "$MODE" in
       fi
     done < <(cells)
     [[ $fail -eq 0 ]] || { echo "dry-run FAILED -- do not submit"; exit 4; }
-    echo "all $(cells | wc -l | tr -d ' ') configs valid -- next: --smoke" ;;
+    # TAGS MUST BE DISTINCT or two cells share a directory. The synthetic
+    # campaign had this check and the field one did not -- which is how the
+    # 30/150 pairs came to collide.
+    n=$(cells | wc -l | tr -d ' ')
+    u=$(while IFS='|' read -r _ a; do
+          python hpc/standalone/run_field_das.py $a --dry-run 2>/dev/null \
+            | grep -o 'field_[^ ]*' | head -1
+        done < <(cells) | sort -u | wc -l | tr -d ' ')
+    [[ "$n" == "$u" ]] || { echo "TAG COLLISION: $n cells -> $u tags"; exit 5; }
+    echo "all $n configs valid, all $u tags distinct -- next: --smoke" ;;
   --smoke)
     check_fixes
     echo "smoke: route_b (the expensive starter path) and the switch arm"
