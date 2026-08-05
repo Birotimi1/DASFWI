@@ -50,6 +50,35 @@ check_fixes() {
         echo "*** no lbfgs/nlcg guard -- both diverge. git pull" >&2; bad=1; }
     grep -q "forge_syn) SCRIPT=" hpc/condor/run_standalone.sh || {
         echo "*** run_standalone.sh missing kinds. git pull" >&2; bad=1; }
+    # >>> THE INPUT DATA. Checked FIRST, on the login node, in a second. <<<
+    # The first field smoke died with "no .sgy files under
+    # /ocean/projects/ees260010p/DAS_VSP/78A-32" -- the SEG-Y had never been
+    # transferred to the cluster, because everything before this ran on
+    # Marmousi or on a synthetic that generates its own data. Every driver
+    # check passed and the run still could not start. A missing INPUT is the
+    # cheapest possible failure to detect and the most expensive to discover
+    # after a queue wait.
+    local dd="${FORGE_DAS_DIR:-}"
+    if [[ -z "$dd" ]]; then
+        echo "*** FORGE_DAS_DIR is not set. The loader would fall back to a" >&2
+        echo "    path beside the repo, which is where the first smoke died." >&2
+        echo "    export FORGE_DAS_DIR=/ocean/projects/ees260010p/\$USER/DAS_VSP" >&2
+        bad=1
+    else
+        for w in 78A-32 78B-32; do
+            local n
+            n=$(ls "$dd/$w"/*.sgy 2>/dev/null | wc -l | tr -d ' ')
+            if [[ "$n" -lt 1 ]]; then
+                echo "*** no .sgy under $dd/$w -- transfer the DAS_VSP data" >&2
+                bad=1
+            else
+                echo "    $w: $n .sgy files"
+            fi
+        done
+        ls "$dd"/*.las >/dev/null 2>&1 \
+            || echo "    NOTE: no .las in $dd -- the 58-32 sonic is missing, so" \
+                    "acceptance criterion 3 (well-log comparison) cannot run." >&2
+    fi
     [[ $bad -eq 0 ]] || exit 3
     echo "fixes present (window, lbfgs guard, driver routing).  optimizer=$OPT"
 }
@@ -115,8 +144,20 @@ case "$MODE" in
     hpc/slurm/submit.sh field convsi "$OPT" -- --well 78A-32 --arm switch \
         --refiner convsi --window --topo-air --starting traveltime \
         --optimizer "$OPT" --smoke
-    echo; echo "then: ls results/standalone_field/*smoke*/metrics.json"
-    echo "      grep -h 'conditioning\\|air layer\\|skip=' output/*.out | tail" ;;
+    echo
+    echo "WAIT for both, then run this -- it FAILS LOUDLY if they produced"
+    echo "nothing, instead of leaving an empty ls to interpret:"
+    cat <<'CHK'
+  n=$(ls results/standalone_field/*smoke*/metrics.json 2>/dev/null | wc -l)
+  if [ "$n" -lt 2 ]; then
+    echo "*** SMOKE FAILED: $n/2 metrics.json. The jobs did NOT run. Look at:"
+    ls -t output/dasfwi_field.*.err | head -2 | xargs -I{} sh -c 'echo "--- {}"; tail -15 {}'
+  else
+    echo "smoke OK ($n/2). Field data + driver verified."
+    grep -h "conditioning\|air layer\|skip=" output/dasfwi_field.*.out | tail -6
+  fi
+CHK
+    ;;
   submit)
     check_fixes; n=0
     while IFS='|' read -r g a; do
