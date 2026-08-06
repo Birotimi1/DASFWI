@@ -128,7 +128,7 @@ check_fixes() {
         # per-user path: /tmp is SHARED on a login node
         PFLOG="${TMPDIR:-/tmp}/pf_${USER:-x}_$w.log"
         PF_RUN --well "$w" --shots "${PF_SHOTS:-20}" \
-            --dz "${PF_DZ:-10}" --f0 "${PF_F0:-10}" >"$PFLOG" 2>&1 || {
+            --dz "${PF_DZ:-20}" --f0 "${PF_F0:-10}" >"$PFLOG" 2>&1 || {
             echo "*** PREFLIGHT FAILED for $w -- do NOT submit:" >&2
             # ALWAYS tail the log. Grepping only for "FAIL" printed NOTHING
             # when preflight CRASHED before reaching any check (a bare
