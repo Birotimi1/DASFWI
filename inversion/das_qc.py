@@ -427,6 +427,27 @@ def qc_das(gathers, dt, f_lo=None, f_hi=None, n_neigh=2, max_shots=None,
         ok, ratio = spacing_is_adequate(channel_spacing, v_min, f_hi, n_neigh)
         premise["geometric_ok"] = bool(ok)
         premise["span_over_wavelength"] = round(float(ratio), 4)
+        # >>> THE GEOMETRIC CHECK MUST BE ABLE TO VETO THE VERDICT. <<<
+        # It was computed here, AFTER the decision above, and fed into nothing.
+        # So on FORGE this function reported "SHAPE DISTORTION -- no misfit
+        # choice fixes this" while its OWN geometry field said span/lambda =
+        # 5.17: channels five wavelengths apart cannot reference each other,
+        # and 100% "shape mismatch" is what that geometry yields on PERFECT
+        # data. A guard that is computed and then ignored is worse than no
+        # guard, because it lends the wrong answer false authority.
+        if not ok and not res.get("inconclusive"):
+            res["inconclusive"] = True
+            res["shape_distortion"] = False
+            res["amplitude_only"] = False
+            res["verdict"] = (
+                f"INCONCLUSIVE -- the neighbour span is {ratio:.2f} wavelengths "
+                f"at {f_hi:.1f} Hz (needs <= 0.25), so neighbouring channels do "
+                f"NOT sample the same wavefield and cannot serve as each "
+                f"other's reference. Any apparent shape mismatch here is "
+                f"GEOMETRY, not coupling. Re-run with n_neigh=1, with f_hi set "
+                f"to the band the INVERSION uses rather than the full recorded "
+                f"band, or on the NATIVE channel spacing rather than "
+                f"grid-decimated channels, before concluding anything.")
     res["premise"] = premise
     res["per_channel"] = {k: np.asarray(v).tolist()
                           for k, v in rep.items() if k.endswith("_med")}
