@@ -81,9 +81,25 @@ OPTIMIZER = "adam"     # sgd | adagrad | adam | adamw | nadam
 ITERATIONS = 200
 
 # --- grid / time (COARSE default = fast wiring; see the module docstring) ----
-DZ = DX = 20.0                     # production: 5 m (gauge l = 2*dz = 10 m)
-NT_MODEL, DT_MODEL = 1200, 1e-3    # production: ~6000, 4e-4 s (CFL at 5 m)
-F0 = 15.0                          # PLACEHOLDER Ricker centre freq [Hz]
+# >>> PARK-COMPARABLE, and affordable only because the geometry was fixed. <<<
+# Park et al. (TLE 44(4)): "the spatial grid interval is 10 m, and the time
+# sampling is 0.001 s over a total recording time of 2 s ... 30 iterations ...
+# a Ricker wavelet with a peak frequency of 10 Hz and a maximum frequency of
+# 20 Hz". Matching them makes our result a like-for-like comparison.
+#
+# 10 m was previously unaffordable because the receivers were mis-mapped to
+# 2492-3522 m depth, forcing nz=192 (3840 m). At their true depths (0-1013 m in
+# 78A-32, 0-1209 m in 78B-32) the model is nz=127, so the FINER grid costs less
+# than the old coarse one did.
+#
+# dt: Park quote 1 ms, but our CFL limit at dz=10, vmax=6000 is 0.75 ms
+# (safety 0.45; the 17:1 air/rock contrast plus PML puts us below the nominal
+# 0.606). Their scheme is not ours, so we take OUR stability limit -- Park's
+# 1 ms blew up here, and only at the full 2 s record, which is why an early
+# short test wrongly cleared it.
+DZ = DX = 10.0
+NT_MODEL, DT_MODEL = 2667, 7.5e-4  # 2.0 s at the CFL limit for dz=10, 6 km/s
+F0 = 10.0                          # Park's Ricker peak frequency
 NABC = 30
 F_ARRIVAL_PAD = 15                 # grid padding nodes
 
