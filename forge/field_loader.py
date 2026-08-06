@@ -80,6 +80,10 @@ DAS_VSP_DIR = Path(os.environ.get("FORGE_DAS_DIR", _default_das_dir()))
 WELLS = ("78A-32", "78B-32")
 FIELD_DT = 1e-3          # SEG-Y sample interval (s)
 DCH = 1.02               # physical channel spacing (m)
+#: Byte offsets this acquisition DECLARES in its textual header (C37/C39).
+#: segyio has no names for these, so they are given as raw byte positions.
+SEGY_FIBREDIST = 197     # distance along the fibre from the interrogator
+SEGY_RECMD = 237         # receiver measured depth
 
 
 # --------------------------------------------------------------------------- #
@@ -127,10 +131,45 @@ def read_shot_geometry(well_dir, n_shots=None):
         cscal, escal = h0[TF.SourceGroupScalar], h0[TF.ElevationScalar]
         gx = np.array([s.header[i][TF.GroupX] for i in range(n_chan)], float)
         gy = np.array([s.header[i][TF.GroupY] for i in range(n_chan)], float)
-        gz = np.array([s.header[i][TF.ReceiverGroupElevation]
-                       for i in range(n_chan)], float)
-    rcv_xyz = np.stack([_scalar(gx, cscal), _scalar(gy, cscal),
-                        _scalar(gz, escal)], axis=1)
+        # >>> DO NOT USE byte 41-44 AS AN ELEVATION. <<<
+        # segyio names it ReceiverGroupElevation, but this acquisition declares
+        # its own byte map in the TEXTUAL header:
+        #     C37  RECTVD(41-44)          C39  FIBREDIST(197-200), RECMD(237-240)
+        # Reading 41-44 as an elevation and subtracting a surface datum put the
+        # fibre at 2492-3522 m depth. It is actually in the TOP KILOMETRE
+        # (RECMD 0-1013 m in 78A-32, 0-1209 m in 78B-32) -- ~2500 m too deep.
+        # Worse, RECMD correlates -1.000 with |RECTVD| in BOTH wells, so the
+        # channel order was also REVERSED. That combination is what produced a
+        # 13-cell campaign of physically meaningless results.
+        #
+        # USE RECMD, PER TRACE. It is already measured depth from the wellhead,
+        # so no datum arithmetic is needed and nothing is assumed about the
+        # site. FIBREDIST was tried first and is WRONG for 78A-32: fibre
+        # distance there runs OPPOSITE to depth, so a FIBREDIST-ordered model
+        # failed the moveout check (-4288 m/s) while 78B-32 passed (+4491).
+        # RECMD agrees with the measured moveout in BOTH wells -- trace 0 is
+        # the deepest channel in 78A-32 and the shallowest in 78B-32, and the
+        # physics confirms each. FIBREDIST is still read, as a cross-check.
+        fibre = np.array([s.header[i][SEGY_FIBREDIST] for i in range(n_chan)],
+                         float)
+        recmd = np.array([s.header[i][SEGY_RECMD] for i in range(n_chan)], float)
+    fibre, recmd = _scalar(fibre, escal), _scalar(recmd, escal)
+    if np.ptp(recmd) > 0:
+        gz_depth = recmd                           # measured depth, positive DOWN
+        # cross-check: |FIBREDIST - RECMD| constant means the two agree. When it
+        # is not, one field's per-trace order is wrong (78A-32) -- worth
+        # reporting, never worth silently choosing between them.
+        if np.ptp(fibre) > 0 and np.ptp(fibre - recmd) > 1.0:
+            print(f"    [note] FIBREDIST and RECMD disagree by "
+                  f"{np.ptp(fibre - recmd):.0f} m across the fibre: their "
+                  f"per-trace orders differ. Using RECMD; the moveout check in "
+                  f"inversion/fibre_geometry.py is the arbiter.")
+    else:
+        raise ValueError(
+            "this SEG-Y carries no usable FIBREDIST/RECMD; the depth convention "
+            "cannot be established from the file. Supply the channel depths "
+            "explicitly rather than guessing from byte 41-44.")
+    rx, ry = _scalar(gx, cscal), _scalar(gy, cscal)
 
     src = np.empty((len(files), 3), float)
     for j, f in enumerate(files):
@@ -140,7 +179,28 @@ def read_shot_geometry(well_dir, n_shots=None):
                       _scalar(h[TF.SourceY], h[TF.SourceGroupScalar]),
                       _scalar(h[TF.SourceSurfaceElevation],
                               h[TF.ElevationScalar])]
-    return dict(files=files, src_xyz=src, rcv_xyz=rcv_xyz, nt=nt, dt=dt)
+
+    # >>> PUT RECEIVERS IN THE SOURCES' FRAME. <<<
+    # RECMD is depth below the WELLHEAD; source elevations are above sea level.
+    # Mixing the two is what made chan_z 1787-2817 m when the fibre is in the
+    # top kilometre -- the ORDERING was right by then, so the moveout check
+    # passed and hid it. Ordering and datum are separate errors and each needs
+    # its own evidence.
+    # The wellhead ground elevation is MEASURED, not assumed: take the source
+    # closest to the well in map view, since the walkaway line runs past it.
+    d_map = np.hypot(src[:, 0] - rx.mean(), src[:, 1] - ry.mean())
+    i_near = int(np.argmin(d_map))
+    wellhead_elev = float(src[i_near, 2])
+    if d_map[i_near] > 500.0:
+        print(f"    [warn] nearest source is {d_map[i_near]:.0f} m from the "
+              f"wellhead; its elevation ({wellhead_elev:.1f} m) is a poor proxy "
+              f"for ground level at the well. Supply it explicitly if the "
+              f"topography is not flat over that distance.")
+    # elevation, up positive -- the contract project_to_2d already expects
+    rcv_xyz = np.stack([rx, ry, wellhead_elev - gz_depth], axis=1)
+    return dict(files=files, src_xyz=src, rcv_xyz=rcv_xyz, nt=nt, dt=dt,
+                wellhead_elev=wellhead_elev,
+                wellhead_offset_m=float(d_map[i_near]))
 
 
 def project_to_2d(src_xyz, rcv_xyz):
