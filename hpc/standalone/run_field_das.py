@@ -208,6 +208,11 @@ def main():
     ap.add_argument("--nt", type=int, default=NT_MODEL)
     ap.add_argument("--f0", type=float, default=F0)
     ap.add_argument("--device", default=None)
+    ap.add_argument("--lag-check", action="store_true", dest="lag_check",
+                    help="run ONE forward from the starting model, report the "
+                         "obs-vs-syn arrival lag distribution, and exit. "
+                         "Answers WHY skip saturates at 1.000, which the "
+                         "fraction itself cannot.")
     ap.add_argument("--starting", default="gradient",
                     choices=("gradient", "traveltime", "route_b"),
                     help="starting model: blind 1-D gradient; first-break "
@@ -489,6 +494,76 @@ def main():
               f"channel_weight={args.channel_weight}", flush=True)
     ctrl = SkipSwitch() if arm == "switch" else None
     obs_arr = np.asarray(bundle["obs_data"].data["strain_rate"])
+
+    # ---------------------------------------------------------------------- #
+    # --lag-check: WHY is skip stuck at 1.000?
+    # ---------------------------------------------------------------------- #
+    # The 13-cell campaign reported skip = 1.000 at iterations 0, 25, ... 125 --
+    # every trace misaligned by more than T/2 = 50 ms, and 150 iterations never
+    # moved it. `convsi` then drove the misfit to 1e-7 anyway, because it is
+    # SOURCE-INDEPENDENT: it estimates a matching filter, so a systematic time
+    # shift is free to absorb. The model railed to the 340/6000 bounds and
+    # learned nothing, while the loss curve looked like a triumph.
+    #
+    # skip is a FRACTION, so it saturates at 1.0 and cannot say WHY. The lag
+    # distribution can:
+    #
+    #   tight spread about a NON-ZERO median  -> a constant time offset. A
+    #       trigger delay or an unapplied SEG-Y delay header. No velocity model
+    #       can fix it, and it costs nothing to correct.
+    #   wide spread                           -> the starting model really is
+    #       far off, and the answer is the envelope/switch path, NOT a waveform
+    #       misfit from a skipped start.
+    #
+    # It runs here, AFTER the real bundle and the real starting model, through
+    # the same propagator the inversion uses -- checking a different path than
+    # the one that runs is how every other bug on this project survived.
+    if args.lag_check:
+        from inversion.field_acceptance import arrival_lags
+        with torch.no_grad():
+            rec = prop.forward(checkpoint_segments=settings["checkpoint_segments"])
+            syn0 = bundle["das_layer"](rec["u"], rec["w"]).cpu().numpy()
+        half_T = 1.0 / (2.0 * args.f0)
+        L = arrival_lags(syn0, obs_arr, g["dt"], max_lag_s=0.5)
+        good = L[np.isfinite(L)]
+        if good.size == 0:
+            print("*** LAG CHECK: no usable traces -- every trace was rejected "
+                  "as dead or zero-amplitude. That is the bug.", flush=True)
+            return 3
+        med = float(np.median(good))
+        iqr = float(np.percentile(good, 75) - np.percentile(good, 25))
+        mad = float(np.median(np.abs(good - med)))
+        beyond = float(np.mean(np.abs(good) > half_T))
+        print(f"\n=== LAG CHECK ({good.size} of {L.size} traces usable) ===\n"
+              f"    median lag   {med*1e3:+8.1f} ms   (syn minus obs)\n"
+              f"    IQR          {iqr*1e3:8.1f} ms\n"
+              f"    MAD          {mad*1e3:8.1f} ms\n"
+              f"    |lag| > T/2  {beyond*100:7.1f} %   (T/2 = {half_T*1e3:.0f} ms"
+              f" at f0={args.f0:g} Hz)\n"
+              f"    range        {good.min()*1e3:+.1f} .. {good.max()*1e3:+.1f} ms",
+              flush=True)
+        # A CONSTANT offset means the spread is small compared with the shift
+        # itself AND small compared with the half period we must land inside.
+        constant = abs(med) > half_T and mad < 0.5 * half_T
+        if constant:
+            print(f"    VERDICT: CONSTANT OFFSET of {med*1e3:+.0f} ms. The "
+                  f"spread (MAD {mad*1e3:.0f} ms) is small next to the shift, so "
+                  f"this is a TIMING problem, not a velocity one.\n"
+                  f"    Check the SEG-Y delay header, the trigger/zero time, and "
+                  f"the source wavelet delay. No inversion can remove it.",
+                  flush=True)
+        elif beyond > 0.5:
+            print(f"    VERDICT: WIDE SPREAD, {beyond*100:.0f}% beyond T/2. The "
+                  f"starting model is genuinely far off.\n"
+                  f"    A waveform misfit from here cannot work -- use the "
+                  f"envelope/switch path, or a lower f0 to widen T/2.",
+                  flush=True)
+        else:
+            print(f"    VERDICT: mostly aligned ({beyond*100:.0f}% beyond T/2). "
+                  f"Skip=1.000 in the campaign is then NOT explained by the "
+                  f"lags, and the skip diagnostic itself is suspect.",
+                  flush=True)
+        return 0
 
     gp_kw = {}
     if args.grad_smooth == "wavelength":
