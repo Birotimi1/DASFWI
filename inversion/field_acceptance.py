@@ -50,7 +50,8 @@ def _xcorr_lag(a, b, max_lag):
     return int(np.argmax(c)) - max_lag
 
 
-def arrival_lags(syn, obs, dt, max_lag_s=0.25, min_amp_frac=0.05):
+def arrival_lags(syn, obs, dt, max_lag_s=0.25, min_amp_frac=None, min_snr=4.0,
+                 noise_frac=0.1):
     """Per-trace arrival time mismatch [s], syn minus obs, by cross-correlation.
 
     NO PICKING, deliberately: Park manually pick first arrivals on 100 shot
@@ -70,11 +71,23 @@ def arrival_lags(syn, obs, dt, max_lag_s=0.25, min_amp_frac=0.05):
         s, o = s[None], o[None]
     S, nt, C = s.shape
     ml = max(1, int(max_lag_s / dt))
-    peak = np.abs(o).max()
     out = np.full((S, C), np.nan)
+    n_noise = max(4, int(noise_frac * nt))
+    # PER-TRACE SNR, not a fraction of the GATHER peak. DAS amplitude falls by
+    # ~1000x down a fibre, so `min_amp_frac` of the global maximum kept only the
+    # loudest 1.8% of traces (38 of 2060 on FORGE) and every lag statistic was
+    # then computed on that unrepresentative handful. A trace is usable when it
+    # stands above ITS OWN pre-arrival noise, which is the actual question.
+    peak = np.abs(o).max()
     for i in range(S):
         for c in range(C):
-            if np.abs(o[i, :, c]).max() < min_amp_frac * peak:
+            tr = o[i, :, c]
+            if min_amp_frac is not None and np.abs(tr).max() < min_amp_frac * peak:
+                continue                       # legacy behaviour, opt-in only
+            noise = float(np.sqrt(np.mean(tr[:n_noise] ** 2)))
+            if not np.isfinite(noise) or noise <= 0:
+                noise = float(np.abs(tr).max()) * 1e-6
+            if not (np.abs(tr).max() > min_snr * noise):
                 continue
             if not np.any(s[i, :, c]):
                 continue
@@ -82,7 +95,11 @@ def arrival_lags(syn, obs, dt, max_lag_s=0.25, min_amp_frac=0.05):
             # arrives LATE. Passing (obs, syn) returns the negation -- the
             # magnitudes were exact and only the sign was wrong, which is the
             # easiest kind of error to ship and the hardest to notice later.
-            out[i, c] = _xcorr_lag(s[i, :, c], o[i, :, c], ml) * dt
+            a, b = s[i, :, c], o[i, :, c]
+            na, nb = np.abs(a).max(), np.abs(b).max()
+            if na > 0 and nb > 0:
+                a, b = a / na, b / nb          # equal weight per trace
+            out[i, c] = _xcorr_lag(a, b, ml) * dt
     return out
 
 
