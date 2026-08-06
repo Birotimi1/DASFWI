@@ -80,6 +80,18 @@ check_fixes() {
                     "acceptance criterion 3 (well-log comparison) cannot run." >&2
     fi
     [[ $bad -eq 0 ]] || exit 3
+    # >>> THE FULL-CHAIN PREFLIGHT, on the REAL data, before any SU is spent.
+    # Thirteen invariants, every one of which has already failed silently on
+    # this project. Cheap, and it is the check that replaces discovering these
+    # one job at a time. <<<
+    for w in 78A-32 78B-32; do
+        python forge/preflight.py --well "$w" --shots "${PF_SHOTS:-20}" \
+            --dz "${PF_DZ:-10}" --f0 "${PF_F0:-10}" >/tmp/pf_$w.log 2>&1 || {
+            echo "*** PREFLIGHT FAILED for $w -- do NOT submit:" >&2
+            grep -E "FAIL|FAILED" /tmp/pf_$w.log >&2
+            exit 6; }
+        echo "    preflight $w: $(grep -o '[0-9]*/[0-9]* PASSED' /tmp/pf_$w.log)"
+    done
     echo "fixes present (window, lbfgs guard, driver routing).  optimizer=$OPT"
 }
 

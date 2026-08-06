@@ -196,7 +196,11 @@ def _route_b_starter(bundle, g, nz, nx, device, iters, optimizer_name):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--well", default=WELL, choices=WELLS)
+    # NOT a fixed list: a hardcoded choices=() makes the driver unusable at any
+    # other site. The loader discovers wells from the data directory, so accept
+    # any name and let it fail loudly if the directory is absent.
+    ap.add_argument("--well", default=WELL,
+                    help="well subdirectory under $FORGE_DAS_DIR (any site)")
     ap.add_argument("--shots", type=int, default=N_SHOTS)
     ap.add_argument("--misfit", default=MISFIT, choices=MISFITS)
     ap.add_argument("--optimizer", default=OPTIMIZER, choices=sorted(OPTIMIZERS))
