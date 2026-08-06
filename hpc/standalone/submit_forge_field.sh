@@ -66,6 +66,8 @@ check_fixes() {
         bad=1
     else
         for w in 78A-32 78B-32; do
+        # per-user path: /tmp is SHARED on a login node
+        PFLOG="${TMPDIR:-/tmp}/pf_${USER:-x}_$w.log"
             local n
             n=$(ls "$dd/$w"/*.sgy 2>/dev/null | wc -l | tr -d ' ')
             if [[ "$n" -lt 1 ]]; then
@@ -85,12 +87,19 @@ check_fixes() {
     # this project. Cheap, and it is the check that replaces discovering these
     # one job at a time. <<<
     for w in 78A-32 78B-32; do
+        # per-user path: /tmp is SHARED on a login node
+        PFLOG="${TMPDIR:-/tmp}/pf_${USER:-x}_$w.log"
         python forge/preflight.py --well "$w" --shots "${PF_SHOTS:-20}" \
-            --dz "${PF_DZ:-10}" --f0 "${PF_F0:-10}" >/tmp/pf_$w.log 2>&1 || {
+            --dz "${PF_DZ:-10}" --f0 "${PF_F0:-10}" >"$PFLOG" 2>&1 || {
             echo "*** PREFLIGHT FAILED for $w -- do NOT submit:" >&2
-            grep -E "FAIL|FAILED" /tmp/pf_$w.log >&2
+            # ALWAYS tail the log. Grepping only for "FAIL" printed NOTHING
+            # when preflight CRASHED before reaching any check (a bare
+            # ModuleNotFoundError), leaving a blank error on the cluster.
+            grep -E "FAIL|Error|error:" "$PFLOG" >&2 || true
+            echo "    --- last 12 lines of $PFLOG ---" >&2
+            tail -12 "$PFLOG" >&2
             exit 6; }
-        echo "    preflight $w: $(grep -o '[0-9]*/[0-9]* PASSED' /tmp/pf_$w.log)"
+        echo "    preflight $w: $(grep -o '[0-9]*/[0-9]* PASSED' "$PFLOG")"
     done
     echo "fixes present (window, lbfgs guard, driver routing).  optimizer=$OPT"
 }

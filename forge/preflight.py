@@ -28,6 +28,26 @@ pass. Point it at another site's directory and it re-derives everything.
 
 Exit code 0 = safe to submit. Non-zero = do not spend SUs.
 """
+
+# --- import bootstrap: depend on NO environment ----------------------------- #
+# `python forge/preflight.py` puts forge/ on sys.path, NOT the repo root, so
+# ADFWI/forge/inversion are unimportable unless PYTHONPATH happens to be set.
+# It was set in every shell I tested in and NOT in the user's cluster shell, so
+# this died there with a bare ModuleNotFoundError. Resolve from __file__
+# instead: walk up to the directory holding forge/ and inversion/, and add the
+# tracked ADFWI package next to it.
+import sys as _sys
+from pathlib import Path as _Path
+
+for _r in _Path(__file__).resolve().parents:
+    if (_r / "forge").is_dir() and (_r / "inversion").is_dir():
+        for _p in (_r, _r / "ADFWI_local"):
+            if (_p / "ADFWI").is_dir() and str(_p) not in _sys.path:
+                _sys.path.insert(0, str(_p))
+        if str(_r) not in _sys.path:
+            _sys.path.insert(0, str(_r))
+        break
+# ---------------------------------------------------------------------------- #
 import argparse
 import os
 import sys

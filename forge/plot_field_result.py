@@ -23,6 +23,26 @@ And it starts at 655 m, so it says NOTHING about the near surface -- which is
 where our synthetic showed the error concentrates. Do not read agreement in the
 granitoid as agreement everywhere. <<<
 """
+
+# --- import bootstrap: depend on NO environment ----------------------------- #
+# `python forge/preflight.py` puts forge/ on sys.path, NOT the repo root, so
+# ADFWI/forge/inversion are unimportable unless PYTHONPATH happens to be set.
+# It was set in every shell I tested in and NOT in the user's cluster shell, so
+# this died there with a bare ModuleNotFoundError. Resolve from __file__
+# instead: walk up to the directory holding forge/ and inversion/, and add the
+# tracked ADFWI package next to it.
+import sys as _sys
+from pathlib import Path as _Path
+
+for _r in _Path(__file__).resolve().parents:
+    if (_r / "forge").is_dir() and (_r / "inversion").is_dir():
+        for _p in (_r, _r / "ADFWI_local"):
+            if (_p / "ADFWI").is_dir() and str(_p) not in _sys.path:
+                _sys.path.insert(0, str(_p))
+        if str(_r) not in _sys.path:
+            _sys.path.insert(0, str(_r))
+        break
+# ---------------------------------------------------------------------------- #
 import argparse
 import json
 import os
