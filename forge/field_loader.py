@@ -106,8 +106,17 @@ def read_shot_geometry(well_dir, n_shots=None):
     files = sorted(glob.glob(os.path.join(str(well_dir), "*.sgy")))
     if not files:
         raise FileNotFoundError(f"no .sgy files under {well_dir}")
-    if n_shots is not None:
-        files = files[:n_shots]
+    if n_shots is not None and n_shots < len(files):
+        # >>> SPREAD the subset ACROSS the line, never take the first N. <<<
+        # Filenames run in acquisition order, i.e. along the walkaway, so
+        # files[:20] gave 20 shots inside 182 m of a 2960 m line -- SIX PER CENT
+        # of the aperture, clustered at one end, with 18 m of the 162 m
+        # topographic relief. That is not a decimated survey, it is a different
+        # (and far worse) experiment: no offset range, no illumination, and the
+        # topography our air layer exists for simply is not there.
+        # Park use 100 shots spread along the line.
+        idx = np.linspace(0, len(files) - 1, int(n_shots)).round().astype(int)
+        files = [files[i] for i in sorted(set(idx.tolist()))]
 
     # receiver column (shared) + sampling, from the first shot
     with segyio.open(files[0], "r", ignore_geometry=True) as s:

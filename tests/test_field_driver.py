@@ -149,3 +149,28 @@ def test_a_full_field_campaign_has_no_duplicate_tags():
                         assert t not in seen, f"COLLISION {t}: {seen[t]} vs {key}"
                         seen[t] = key
     assert len(seen) == 2 * 3 * 2 * 2 * 2
+
+
+def test_shot_subset_spans_the_line_not_the_first_N():
+    """THE BUG THAT WOULD HAVE INVALIDATED THE WHOLE FIELD CAMPAIGN.
+
+    Filenames run in acquisition order along the walkaway, so `files[:20]` gave
+    20 shots inside 182 m of a 2960 m line -- 6% of the aperture, clustered at
+    one end, carrying 18 m of the 162 m topographic relief. Not a decimated
+    survey: a different and far worse experiment, with no offset range, no
+    illumination, and none of the topography the air layer exists for.
+    Park use 100 shots spread along the line."""
+    import numpy as np
+    files = [f"shot_{i:04d}.sgy" for i in range(318)]
+    n = 20
+    idx = np.linspace(0, len(files) - 1, n).round().astype(int)
+    picked = [files[i] for i in sorted(set(idx.tolist()))]
+    assert picked[0] == files[0], "must include the first shot"
+    assert picked[-1] == files[-1], "must include the LAST shot -- the far end"
+    # spread, not clustered: consecutive gaps are all ~len/n
+    gaps = np.diff([files.index(f) for f in picked])
+    assert gaps.min() >= 0.5 * (len(files) / n)
+    assert gaps.max() <= 2.0 * (len(files) / n)
+    # and the naive slice must FAIL that test, or this asserts nothing
+    naive = files[:n]
+    assert naive[-1] != files[-1]

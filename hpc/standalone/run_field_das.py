@@ -524,6 +524,14 @@ def main():
                       if model.vp.grad is not None else np.zeros_like(vp_final))
         m = dict(
             tag=tag, well=args.well, n_shots=bundle["n_shots"], device=device,
+            optimizer=args.optimizer,
+            # `diverged` was never set here, so the ranker could not filter a
+            # dead cell. Field runs have no truth, so the ONLY divergence
+            # signals are the loss and the model itself.
+            diverged=bool(not np.isfinite(iter_loss).all()
+                          or not np.isfinite(vp_final).all()
+                          or np.abs(vp_final).max() > 1e5),
+            model_finite=bool(np.isfinite(vp_final).all()),
             iterations=iterations, iterations_done=int(done),
             complete=bool(complete), runtime_h=round(hours, 3),
             loss_first=float(iter_loss[0]) if len(iter_loss) else None,
@@ -570,6 +578,15 @@ def main():
         in_band = 0
         while in_band < band_iters:
             sk = measure_skip(fb)
+            if not np.isfinite(sk):
+                # The smoke showed `skip=nan -> lambda=0` on REAL data, i.e. the
+                # controller handed straight to the refiner at an unknown skip
+                # level -- the worst available move and the exact thing it
+                # exists to prevent. Guarded in the synthetic driver but NOT
+                # here. Fail SAFE: treat an unmeasurable skip as fully skipped.
+                print("  *** skip is NaN -- assuming SKIPPED (fail-safe)",
+                      flush=True)
+                sk = 1.0
             if arm == "switch":
                 lam = ctrl.update(sk)
             elif arm == "fixedk":
