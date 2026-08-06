@@ -197,6 +197,31 @@ def main():
         f"{n_big*g['dt']*1e3:.0f} ms -> {sk_hi:.3f} (want ~1);  "
         f"T/2 = {half_T*1e3:.0f} ms")
 
+    # ---- 5b. FIBRE ORIENTATION: does the moveout agree with the headers? -- #
+    # THE CHECK THAT WOULD HAVE SAVED THE 13-CELL CAMPAIGN. Those runs completed
+    # with a channel->depth map that was reversed, so receivers sat where no
+    # velocity model could explain the arrivals. Every symptom pointed
+    # elsewhere -- skip stuck at 1.000, convsi collapsing to 1e-7, gc diverging,
+    # the model railing to both bounds -- and none of them said "geometry".
+    # Site-agnostic: nothing is assumed about the well, only that a direct
+    # arrival exists and that rock carries P waves at 0.5-9 km/s.
+    from inversion.fibre_geometry import check_orientation
+    ordr = np.argsort(p["chan_z"])                  # the loader's depth belief
+    spacing = float(np.median(np.diff(np.sort(p["chan_z"]))))
+    # NEAR-OFFSET shots only. The amplitude block above reads the first three
+    # files, which after the shot-spread fix are spread ACROSS the line -- far
+    # offsets, where the ray does not run along the fibre and the lags are not
+    # resolvable. Feeding those in gave 1 usable measurement of 9 and a
+    # confident, wrong "AGREES".
+    near = np.argsort(np.abs(p["src_x"]))[:3]
+    d_near = load_strain_gathers([g["files"][i] for i in near],
+                                 len(g["rcv_xyz"]))
+    ori = check_orientation(d_near[:, :, ordr], spacing, g["dt"])
+    chk(ori["agrees"] is True, "fibre orientation",
+        f"{ori['verdict'][:96]}"
+        + (f"  [v={ori['v_median']:+.0f} m/s, {ori['n_usable']}/{ori['n_total']}]"
+           if "v_median" in ori else ""))
+
     # a modestly shifted copy stands in for a synthetic: enough mismatch to
     # give a non-zero gradient, not so much that the misfit saturates
     syn = np.roll(d, n_small, axis=1)
