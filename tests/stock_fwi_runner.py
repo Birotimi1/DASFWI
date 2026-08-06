@@ -10,6 +10,23 @@ Fully deterministic: no randomness anywhere (fixed geometry, fixed bump
 perturbation, AdamW with default deterministic updates, float64).
 """
 
+# --- import bootstrap: depend on NO environment ----------------------------- #
+# Running this as a script puts ITS OWN directory on sys.path, not the repo
+# root, so ADFWI/forge/inversion are unimportable unless PYTHONPATH is set.
+# Resolve from __file__ instead. See tests/check_imports.py, which enforces it.
+import sys as _sys
+from pathlib import Path as _Path
+
+for _r in _Path(__file__).resolve().parents:
+    if (_r / "forge").is_dir() and (_r / "inversion").is_dir():
+        for _p in (_r, _r / "ADFWI_local"):
+            if (_p / "ADFWI").is_dir() and str(_p) not in _sys.path:
+                _sys.path.insert(0, str(_p))
+        if str(_r) not in _sys.path:
+            _sys.path.insert(0, str(_r))
+        break
+# ---------------------------------------------------------------------------- #
+
 import numpy as np
 import torch
 

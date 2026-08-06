@@ -26,6 +26,25 @@ Usage:
     python inversion/run_starting_model_ladder.py --misfits gc,envelope,nim
 """
 
+# --- import bootstrap: depend on NO environment ----------------------------- #
+# Running this as a script puts ITS OWN directory on sys.path, not the repo
+# root, so ADFWI/forge/inversion are unimportable unless PYTHONPATH is set. The
+# SLURM job script sets it, which is why this never showed up in production --
+# but any direct `python inversion/das_qc.py ...` on a login node or at another
+# site dies with a bare ModuleNotFoundError. Resolve from __file__ instead.
+import sys as _sys
+from pathlib import Path as _Path
+
+for _r in _Path(__file__).resolve().parents:
+    if (_r / "forge").is_dir() and (_r / "inversion").is_dir():
+        for _p in (_r, _r / "ADFWI_local"):
+            if (_p / "ADFWI").is_dir() and str(_p) not in _sys.path:
+                _sys.path.insert(0, str(_p))
+        if str(_r) not in _sys.path:
+            _sys.path.insert(0, str(_r))
+        break
+# ---------------------------------------------------------------------------- #
+
 import argparse
 import json
 import os
