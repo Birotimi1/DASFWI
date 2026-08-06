@@ -175,7 +175,9 @@ elif [[ "$SWEEP" == "1" ]]; then
   # gc is amplitude-insensitive, which matters more on field data than on the
   # inverse-crime synthetics where convsi won.
   echo "F|--well 78A-32 --arm switch --refiner convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 30"
+  echo "F|--well 78A-32 --arm switch --refiner gc --window --topo-air --starting route_b --optimizer $OPT --iterations 30"
   echo "F|--well 78A-32 --arm switch --refiner gc --window --topo-air --starting route_b --optimizer $OPT --iterations 150"
+  echo "F|--well 78B-32 --arm switch --refiner convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 30"
   echo "F|--well 78B-32 --arm switch --refiner convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 150"
 fi
 cat <<EOF
@@ -187,6 +189,7 @@ C|--well 78A-32 --arm gc --window --topo-air --starting traveltime --optimizer $
 C|--well 78A-32 --arm gc --window --topo-air --starting traveltime --optimizer $OPT --iterations 150
 D|--well 78B-32 --arm convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 30
 D|--well 78B-32 --arm convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 150
+E|--well 78A-32 --arm convsi --topo-air --starting route_b --optimizer $OPT --iterations 30
 E|--well 78A-32 --arm convsi --topo-air --starting route_b --optimizer $OPT --iterations 150
 E|--well 78A-32 --arm switch --refiner convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 150
 EOF
@@ -216,6 +219,27 @@ case "$MODE" in
     n=$(cells | wc -l | tr -d ' ')
     u=$(sort -u "$TAGS" | wc -l | tr -d ' '); rm -f "$TAGS"
     [[ "$n" == "$u" ]] || { echo "TAG COLLISION: $n cells -> $u tags"; exit 5; }
+    # EVERY config must run at BOTH 30 and 150 iterations. The field has no
+    # truth, so the stopping point has to be OBSERVED, not assumed -- the
+    # synthetic showed shallow error growing monotonically with 30 the best. I
+    # rebalanced the campaign toward the switch and shipped three configs with
+    # only one iteration count; the tag check passed because the tags were
+    # still distinct. Checking uniqueness is not checking completeness.
+    unpaired=$(cells | sed 's/^[A-Z]|//' | awk '
+        { it=""; line=$0
+          if (match(line, /--iterations [0-9]+/)) {
+              it = substr(line, RSTART+13, RLENGTH-13)
+              sub(/--iterations [0-9]+/, "", line) }
+          seen[line] = seen[line] " " it }
+        END { for (k in seen) {
+                  if (seen[k] !~ /(^| )30( |$)/ || seen[k] !~ /(^| )150( |$)/)
+                      print "   " k } }')
+    if [[ -n "$unpaired" ]]; then
+        echo "*** CONFIGS MISSING a 30- or 150-iteration counterpart:" >&2
+        echo "$unpaired" >&2
+        exit 7
+    fi
+    echo "all configs run at BOTH 30 and 150 iterations"
     echo "all $n configs valid, all $u tags distinct -- next: --smoke" ;;
   --smoke)
     check_fixes
