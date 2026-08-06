@@ -90,6 +90,10 @@ def main():
     ap.add_argument("--dz", type=float, default=10.0)
     ap.add_argument("--f0", type=float, default=10.0)
     ap.add_argument("--record-s", type=float, default=2.0, dest="record_s")
+    ap.add_argument("--device", default=None,
+                    help="cuda | cpu | mps. Default: auto. Run with cuda "
+                         "inside a GPU job to validate the device the "
+                         "inversion will actually use.")
     ap.add_argument("--vmin", type=float, default=1000.0)
     ap.add_argument("--vmax", type=float, default=6000.0)
     ap.add_argument("--spread-frac", type=float, default=0.8, dest="spread",
@@ -200,6 +204,41 @@ def main():
     torch.set_num_threads(1)   # see the CPU-budget note at the top
     from inversion import config
     from inversion.das_conditioning import ConditionedMisfit
+    from inversion.device import pick_device
+
+    # >>> VALIDATE ON THE DEVICE THE JOBS WILL ACTUALLY USE. <<<
+    # Running every check on the login-node CPU tests a configuration that no
+    # job ever runs. The misfits, the dtype and the memory footprint all behave
+    # differently on an H100, and "it worked on CPU" has never been the
+    # question. allow_cpu=True because a login-node run is a legitimate way to
+    # use this -- the guard exists for the DRIVERS, which must never fall back.
+    dev = pick_device(args.device, allow_cpu=True)
+    if dev == "mps":
+        # NOT mps: envelope/gc/convsi need FFT ops MPS does not implement --
+        # run_technique_matrix.py already refuses it for the same reason. Auto-
+        # selecting it here turned three PASSes into FAILs on a Mac, which
+        # would have read as "the data is bad" rather than "wrong backend".
+        dev = "cpu"
+    if dev == "cuda":
+        p = torch.cuda.get_device_properties(0)
+        free_b, total_b = torch.cuda.mem_get_info()
+        chk(True, "gpu identity",
+            f"{p.name}, {total_b/2**30:.0f} GiB total, "
+            f"{free_b/2**30:.0f} GiB free, sm_{p.major}{p.minor}")
+        # Rough forward-wavefield footprint for ONE shot: nt x nz x nx x 4 B.
+        # An ESTIMATE, labelled as one -- the point is to catch an order-of-
+        # magnitude problem before 13 jobs die at hour three, not to predict
+        # allocator behaviour to the megabyte.
+        est = nt * nz * nx * 4
+        chk(est < 0.5 * free_b, "gpu memory headroom",
+            f"~{est/2**30:.2f} GiB estimated per-shot wavefield "
+            f"(nt={nt} x nz={nz} x nx={nx} x 4B) "
+            f"vs {free_b/2**30:.0f} GiB free")
+    else:
+        print(f"  [note] running on {dev}: the GPU checks are SKIPPED, so this "
+              f"does NOT prove the H100 path works. Use --device cuda in a GPU "
+              f"job for that.")
+
     ok_m = True
     for name in ("convsi", "gc", "l2"):
         try:
@@ -207,8 +246,9 @@ def main():
                                                       iterations=10),
                                   dt=g["dt"], window=True,
                                   window_pre=0.15, window_post=0.5)
-            o = torch.tensor(d, dtype=torch.float32)
-            s = torch.tensor(syn, dtype=torch.float32).requires_grad_(True)
+            o = torch.tensor(d, dtype=torch.float32, device=dev)
+            s = torch.tensor(syn, dtype=torch.float32,
+                             device=dev).requires_grad_(True)
             e = m.forward(s, o)
             gr, = torch.autograd.grad(e, s)
             good = (torch.isfinite(e).all() and torch.isfinite(gr).all()
@@ -227,11 +267,14 @@ def main():
     import resource
     ru = resource.getrusage(resource.RUSAGE_SELF)
     cpu = ru.ru_utime + ru.ru_stime
+    where = f"on {dev}" if dev != "cpu" else "on the login node"
     print(f"\n=== {len(_R)-len(bad)}/{len(_R)} PASSED ===   "
-          f"[{cpu:.0f} CPU-s of the 1800 s login-node limit]")
-    if cpu > 600:
-        print("  *** over a third of the login-node budget -- lower --shots "
-              "before this gets killed ***")
+          f"[{where}, {cpu:.0f} CPU-s]")
+    # The 1800 s cap is a LOGIN-NODE limit; inside a job it does not apply, so
+    # warning about it there would train the reader to ignore the warning.
+    if dev == "cpu" and not os.environ.get("SLURM_JOB_ID") and cpu > 600:
+        print("  *** over a third of the 1800 s login-node CPU budget -- "
+              "lower --shots before this gets killed ***")
     if bad:
         print("FAILED: " + ", ".join(bad))
         print("DO NOT SUBMIT until these pass.")

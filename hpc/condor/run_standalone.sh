@@ -27,9 +27,14 @@ case "$KIND" in
     # USE_MO=0: the synthetic driver takes --optimizer but has NO --misfit,
     # so injecting the positional misfit/optimizer pair would break argparse.
     forge_syn) SCRIPT=hpc/standalone/run_forge_synthetic.py; USE_MO=0 ;;
+    # USE_MO=0: preflight has no --misfit/--optimizer. Routed here so the GPU
+    # preflight reuses the SAME env activation and dispatch as the jobs it
+    # gates -- validating through a different path than the real one is how
+    # the login-node/PYTHONPATH mismatch got through in the first place.
+    preflight) SCRIPT=forge/preflight.py; USE_MO=0 ;;
     ladder)   SCRIPT=inversion/run_starting_model_ladder.py; USE_MO=0 ;;
     matrix)   SCRIPT=inversion/run_technique_matrix.py;      USE_MO=0 ;;
-    *) echo "kind must be genobs|genobs_elastic|calibrate|adaptive|starter|starter_elastic|pipeline|switch|handover|acoustic|elastic|field|ladder|matrix, got: $KIND" >&2; exit 2 ;;
+    *) echo "kind must be genobs|genobs_elastic|calibrate|adaptive|starter|starter_elastic|pipeline|switch|handover|acoustic|elastic|field|forge_syn|preflight|ladder|matrix, got: $KIND" >&2; exit 2 ;;
 esac
 
 # DASFWI_ACTIVATE lets another scheduler (e.g. hpc/slurm on Bridges-2) inject its

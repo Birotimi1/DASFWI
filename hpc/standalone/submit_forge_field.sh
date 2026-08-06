@@ -77,7 +77,33 @@ check_fixes() {
         echo "    export FORGE_DAS_DIR=/ocean/projects/ees260010p/\$USER/DAS_VSP" >&2
         bad=1
     else
-        for w in 78A-32 78B-32; do
+        # >>> PREFLIGHT ON THE H100, not the login node. <<<
+    # The jobs run on a GPU; validating on a login-node CPU tests a
+    # configuration nothing ever runs. On the card it also checks what only the
+    # card can show: that CUDA is really there, which device SLURM handed over,
+    # and whether the wavefield fits in memory. It goes through
+    # run_standalone.sh -- the SAME dispatch and env activation as the real
+    # jobs -- because validating through a different path is exactly how the
+    # PYTHONPATH mismatch survived to the cluster.
+    # Cost is a few minutes of one H100, well under 1 SU. PF_LOCAL=1 falls back
+    # to the login node (no queue wait, but it does NOT prove the GPU path).
+    export DASFWI_ACTIVATE="${DASFWI_ACTIVATE:-hpc/slurm/activate_bridges2.sh}"
+    if [[ -n "${PF_LOCAL:-}" ]]; then
+        PF_RUN() { $LOGIN_CAP python forge/preflight.py "$@"; }
+        echo "    preflight: LOGIN NODE (PF_LOCAL=1) -- GPU path NOT validated"
+    elif command -v srun >/dev/null 2>&1; then
+        PF_RUN() {
+            srun --partition="${PF_PART:-GPU-shared}" \
+                 --gpus="${PF_GPU:-h100-80:1}" --time="${PF_TIME:-00:20:00}" \
+                 --job-name=dasfwi_preflight \
+                 hpc/condor/run_standalone.sh preflight gc adam "$@" --device cuda
+        }
+        echo "    preflight: H100 via srun (waits for a slot; PF_LOCAL=1 to skip)"
+    else
+        PF_RUN() { $LOGIN_CAP python forge/preflight.py "$@"; }
+        echo "    preflight: no srun found -> login node"
+    fi
+    for w in 78A-32 78B-32; do
         # per-user path: /tmp is SHARED on a login node
         PFLOG="${TMPDIR:-/tmp}/pf_${USER:-x}_$w.log"
             local n
@@ -101,7 +127,7 @@ check_fixes() {
     for w in 78A-32 78B-32; do
         # per-user path: /tmp is SHARED on a login node
         PFLOG="${TMPDIR:-/tmp}/pf_${USER:-x}_$w.log"
-        $LOGIN_CAP python forge/preflight.py --well "$w" --shots "${PF_SHOTS:-20}" \
+        PF_RUN --well "$w" --shots "${PF_SHOTS:-20}" \
             --dz "${PF_DZ:-10}" --f0 "${PF_F0:-10}" >"$PFLOG" 2>&1 || {
             echo "*** PREFLIGHT FAILED for $w -- do NOT submit:" >&2
             # ALWAYS tail the log. Grepping only for "FAIL" printed NOTHING
@@ -111,7 +137,9 @@ check_fixes() {
             echo "    --- last 12 lines of $PFLOG ---" >&2
             tail -12 "$PFLOG" >&2
             exit 6; }
-        echo "    preflight $w: $(grep -o '[0-9]*/[0-9]* PASSED' "$PFLOG")"
+        echo "    preflight $w: $(grep -o '[0-9]*/[0-9]* PASSED' "$PFLOG") " \
+             "$(grep -o 'on cuda\|on the login node\|on mps' "$PFLOG" | head -1)" \
+             "$(grep -o 'NVIDIA [A-Z0-9 ]*' "$PFLOG" | head -1)"
     done
     echo "fixes present (window, lbfgs guard, driver routing).  optimizer=$OPT"
 }
