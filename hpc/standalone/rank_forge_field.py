@@ -50,9 +50,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 ROOT = Path(os.environ.get("DASFWI_RESULTS",
                            Path(__file__).resolve().parents[2] / "results"
                            / "standalone_field"))
-#: zone I/II/III boundaries at FORGE, read off Park's figure (m below surface).
-#: Site-specific by nature; override with --zones for another field.
-ZONES_M = (150.0, 700.0)
+#: Zone I/II/III boundaries, m below SURFACE, quoted verbatim from Park et al.
+#: (TLE 44(4), doi 10.1190/tle44040256.1): "Zone I extends from the surface to
+#: approximately 0.35 km depth, zone II from 0.35 km to around 1 km, and zone
+#: III beyond 1 km depth." I had 150/700 m read off their figure by eye, which
+#: was wrong by 200 and 300 m -- enough to fail a 100 m tolerance on a model
+#: that was actually correct. Read the text, not the picture.
+#: NOTE Park's Figure 9 shows these at ~0.45 and ~1.1 km because their section
+#: INCLUDES the air layer; these values are below-surface, matching our chan_z.
+#: Site-specific by nature -- override with --zones at any other field.
+ZONES_M = (350.0, 1000.0)
+#: Corroboration from a second, independent source: the 78B-32 cuttings log puts
+#: the top of the granitoid at 823 m, inside zone II->III as defined above.
+GRANITOID_TOP_78B_M = 823.0
 
 
 def rows(root):
