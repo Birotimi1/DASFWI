@@ -119,9 +119,8 @@ def main():
     for m in misfits:
         if m not in ALL_MISFITS:
             raise SystemExit(f"unknown misfit {m!r}; choices {ALL_MISFITS}")
-    device = args.device or ("cuda" if torch.cuda.is_available()
-                             else "mps" if torch.backends.mps.is_available()
-                             else "cpu")
+    from inversion.device import pick_device as _pd
+    device = _pd(args.device)       # raises if a GPU job has no CUDA
     os.makedirs(OUT_DIR, exist_ok=True)
 
     vp_true, rho_true = load_crop()

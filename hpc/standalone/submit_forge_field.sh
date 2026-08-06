@@ -44,8 +44,11 @@ REPO="$(cd "$HERE/../.." && pwd)"; cd "$REPO"
 # sooner in wall time (measured: 222 -> 16 CPU-s, 58 -> 21 s wall). Applies to
 # the preflight and to all 13 dry-runs; the GPU jobs are unaffected, they run
 # on compute nodes through their own job script.
-export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
-export NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
+# NOT `export`: hpc/slurm/submit.sh passes --export=ALL, so an exported cap
+# would RIDE INTO THE H100 JOBS and single-thread their CPU-side work (SEG-Y
+# loading, preprocessing). Scope it to the login-node commands with a prefix.
+LOGIN_CAP="env OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1"
 MODE="${1:-submit}"
 OPT="${DASFWI_OPT:-adam}"     # set from the synthetic optimizer sweep
 
@@ -98,7 +101,7 @@ check_fixes() {
     for w in 78A-32 78B-32; do
         # per-user path: /tmp is SHARED on a login node
         PFLOG="${TMPDIR:-/tmp}/pf_${USER:-x}_$w.log"
-        python forge/preflight.py --well "$w" --shots "${PF_SHOTS:-20}" \
+        $LOGIN_CAP python forge/preflight.py --well "$w" --shots "${PF_SHOTS:-20}" \
             --dz "${PF_DZ:-10}" --f0 "${PF_F0:-10}" >"$PFLOG" 2>&1 || {
             echo "*** PREFLIGHT FAILED for $w -- do NOT submit:" >&2
             # ALWAYS tail the log. Grepping only for "FAIL" printed NOTHING
@@ -148,7 +151,7 @@ case "$MODE" in
   --dry-run)
     check_fixes; fail=0; TAGS=$(mktemp)
     while IFS='|' read -r g a; do
-      if out=$(python hpc/standalone/run_field_das.py $a --dry-run 2>&1); then
+      if out=$($LOGIN_CAP python hpc/standalone/run_field_das.py $a --dry-run 2>&1); then
         tag=$(printf '%s' "$out" | grep -o 'field_[^ ]*' | head -1)
         echo "$tag" >> "$TAGS"
         printf '  ok   %-2s %s\n' "$g" "$tag"

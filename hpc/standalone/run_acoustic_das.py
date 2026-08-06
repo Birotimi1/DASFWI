@@ -150,13 +150,11 @@ def build_misfit(name, iterations):
     return config.build_misfit(name, dt=DT, iterations=iterations)
 
 def pick_device(arg=None):
-    if arg:
-        return arg
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+    # Delegates so the SLURM guard lives in ONE place: holding an H100 and
+    # falling through to CPU bills the full walltime for a run that will not
+    # finish. See inversion/device.py.
+    from inversion.device import pick_device as _pd
+    return _pd(arg)
 
 def build_model(vp, vp_bound, vp_grad, device):
     rho = np.power(np.asarray(vp), 0.25) * 310.0     # Liu's density

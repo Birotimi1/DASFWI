@@ -160,7 +160,8 @@ def main():
             "shot batching the gradient is STOCHASTIC, so the Wolfe/Armijo "
             "conditions are evaluated on noise. Adam/SGD do not line-search "
             "and are unaffected. Use adam, adamw, nadam or sgd.")
-    dev = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    from inversion.device import pick_device as _pd
+    dev = _pd(args.device)          # raises if a GPU job has no CUDA
     iterations = 4 if args.smoke else args.iterations
     f0_asm = args.f0_assumed if args.f0_assumed is not None else args.f0_true
     arm = args.arm

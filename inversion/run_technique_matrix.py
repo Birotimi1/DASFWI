@@ -72,11 +72,11 @@ SEARCH_LR = {"sgd": 0.004, "adagrad": 5.0, "adam": 2.0, "adamw": 2.0,
 
 
 def pick_device(arg):
-    if arg:
-        return arg
-    if torch.cuda.is_available():
-        return "cuda"
-    return "cpu"           # NOT mps: envelope/weci/sdtw/convsi need FFT/pysdtw
+    from inversion.device import pick_device as _pd
+    d = _pd(arg)
+    # NOT mps: envelope/weci/sdtw/convsi need FFT/pysdtw. Preserved verbatim --
+    # the shared helper offers mps and this matrix must still refuse it.
+    return "cpu" if d == "mps" else d
 
 
 def main():
