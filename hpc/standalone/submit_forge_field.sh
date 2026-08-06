@@ -153,11 +153,30 @@ check_fixes() {
 SWEEP="${SWEEP:-0}"
 
 cells() {
-if [[ "$SWEEP" == "1" ]]; then
+# >>> SWEEP=1 NOW BUYS THE ARM, NOT THE OPTIMIZER. <<<
+# The lag check on the REAL data, after the geometry fix and with 1794 of 2060
+# traces usable (87%, up from 38 when the amplitude gate was broken), measured:
+#     median -74.6 ms, MAD 131 ms, 67% of traces beyond T/2 = 50 ms
+# i.e. the Route B start is CYCLE-SKIPPED. A solo waveform misfit from there is
+# the combination our own Marmousi step 3 measured as losing: switch 0.742 vs
+# l2 0.617, and the switch won at all four optimizers. Twelve of thirteen cells
+# were solo arms with the switch as a single ablation -- backwards, given what
+# the data says.
+# The optimizer question was already settled on the FORGE synthetic (nadam), so
+# those three cells are better spent here. Optimizer sweep is still reachable
+# with SWEEP=opt.
+if [[ "$SWEEP" == "opt" ]]; then
   for o in adam adamw nadam sgd; do
     [[ "$o" == "$OPT" ]] && continue
     echo "S|--well 78A-32 --arm convsi --window --topo-air --starting route_b --optimizer $o --iterations 150"
   done
+elif [[ "$SWEEP" == "1" ]]; then
+  # the switch at BOTH iteration counts, and with the gc refiner Park chose --
+  # gc is amplitude-insensitive, which matters more on field data than on the
+  # inverse-crime synthetics where convsi won.
+  echo "F|--well 78A-32 --arm switch --refiner convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 30"
+  echo "F|--well 78A-32 --arm switch --refiner gc --window --topo-air --starting route_b --optimizer $OPT --iterations 150"
+  echo "F|--well 78B-32 --arm switch --refiner convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 150"
 fi
 cat <<EOF
 A|--well 78A-32 --arm convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 30

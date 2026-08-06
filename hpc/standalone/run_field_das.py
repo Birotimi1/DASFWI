@@ -540,7 +540,8 @@ def main():
             rec = prop.forward(checkpoint_segments=settings["checkpoint_segments"])
             syn0 = bundle["das_layer"](rec["u"], rec["w"]).cpu().numpy()
         half_T = 1.0 / (2.0 * args.f0)
-        L = arrival_lags(syn0, obs_arr, g["dt"], max_lag_s=0.5)
+        max_lag_s = 0.5
+        L = arrival_lags(syn0, obs_arr, g["dt"], max_lag_s=max_lag_s)
         good = L[np.isfinite(L)]
         if good.size == 0:
             print("*** LAG CHECK: no usable traces -- every trace was rejected "
@@ -558,6 +559,18 @@ def main():
               f" at f0={args.f0:g} Hz)\n"
               f"    range        {good.min()*1e3:+.1f} .. {good.max()*1e3:+.1f} ms",
               flush=True)
+        # A lag pinned at the search limit is a CENSORED measurement, not a
+        # measurement. Quoting IQR/MAD from a railed distribution understates
+        # the true spread and reads as though it were exact.
+        railed = float(np.mean(np.abs(good) > 0.98 * max_lag_s))
+        if railed > 0.02:
+            print(f"    *** {railed*100:.0f}% of lags are AT the +-{max_lag_s*1e3:.0f} ms "
+                  f"search limit: the spread above is a LOWER BOUND, not the "
+                  f"true value. Raise max_lag_s to measure it.", flush=True)
+        # Whole traces are correlated, and field DAS carries surface waves an
+        # ACOUSTIC model cannot produce, so some of this spread is events the
+        # physics was never going to match. --window is the mitigation and is
+        # NOT applied here; read the spread as pessimistic.
         # A CONSTANT offset means the spread is small compared with the shift
         # itself AND small compared with the half period we must land inside.
         constant = abs(med) > half_T and mad < 0.5 * half_T
