@@ -29,6 +29,21 @@ pass. Point it at another site's directory and it re-derives everything.
 Exit code 0 = safe to submit. Non-zero = do not spend SUs.
 """
 
+# --- login-node CPU budget -------------------------------------------------- #
+# THIS RAN ON A LOGIN NODE AND WAS KILLED: "cpu time 2105.1 seconds exceeded
+# limit 1800". Not because it does much work -- because torch/BLAS default to
+# one thread per core, and the limit counts CPU-seconds = wall x threads. On a
+# 24-core box the same run cost 222 CPU-s at 380% CPU with 189 s of that pure
+# SYSTEM time, i.e. threads fighting, not computing. Capped to one thread it
+# costs 16 CPU-s and finishes FASTER in wall time (21 s vs 58 s).
+# Must be set BEFORE numpy/torch are imported, so it sits above the bootstrap.
+import os as _os
+
+for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    _os.environ.setdefault(_v, "1")     # setdefault: an explicit export wins
+# ---------------------------------------------------------------------------- #
+
 # --- import bootstrap: depend on NO environment ----------------------------- #
 # `python forge/preflight.py` puts forge/ on sys.path, NOT the repo root, so
 # ADFWI/forge/inversion are unimportable unless PYTHONPATH happens to be set.
@@ -182,6 +197,7 @@ def main():
     # give a non-zero gradient, not so much that the misfit saturates
     syn = np.roll(d, n_small, axis=1)
     import torch
+    torch.set_num_threads(1)   # see the CPU-budget note at the top
     from inversion import config
     from inversion.das_conditioning import ConditionedMisfit
     ok_m = True
@@ -205,7 +221,17 @@ def main():
             ok_m = False
 
     bad = [n for ok, n, _ in _R if not ok]
-    print(f"\n=== {len(_R)-len(bad)}/{len(_R)} PASSED ===")
+    # Report the login-node CPU budget consumed. This was killed at 2105 CPU-s
+    # against an 1800 s limit, and the only reason that was a surprise is that
+    # nothing measured it -- so measure it, every run.
+    import resource
+    ru = resource.getrusage(resource.RUSAGE_SELF)
+    cpu = ru.ru_utime + ru.ru_stime
+    print(f"\n=== {len(_R)-len(bad)}/{len(_R)} PASSED ===   "
+          f"[{cpu:.0f} CPU-s of the 1800 s login-node limit]")
+    if cpu > 600:
+        print("  *** over a third of the login-node budget -- lower --shots "
+              "before this gets killed ***")
     if bad:
         print("FAILED: " + ", ".join(bad))
         print("DO NOT SUBMIT until these pass.")

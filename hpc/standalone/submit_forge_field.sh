@@ -37,6 +37,15 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"; cd "$REPO"
+# LOGIN-NODE CPU BUDGET. The preflight was KILLED here: "cpu time 2105.1
+# seconds exceeded limit 1800". torch/BLAS start one thread per core and the
+# limit counts CPU-seconds = wall x threads, so a 60 s check on a 40-core login
+# node bills ~2400 s. Capped to one thread it is 14x cheaper AND finishes
+# sooner in wall time (measured: 222 -> 16 CPU-s, 58 -> 21 s wall). Applies to
+# the preflight and to all 13 dry-runs; the GPU jobs are unaffected, they run
+# on compute nodes through their own job script.
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 MODE="${1:-submit}"
 OPT="${DASFWI_OPT:-adam}"     # set from the synthetic optimizer sweep
 
@@ -137,10 +146,12 @@ case "$MODE" in
   --list) cells | while IFS='|' read -r g a; do printf '  %-2s %s\n' "$g" "$a"; done
           echo "--- $(cells | wc -l | tr -d ' ') cells ---" ;;
   --dry-run)
-    check_fixes; fail=0
+    check_fixes; fail=0; TAGS=$(mktemp)
     while IFS='|' read -r g a; do
       if out=$(python hpc/standalone/run_field_das.py $a --dry-run 2>&1); then
-        printf '  ok   %-2s %s\n' "$g" "$(printf '%s' "$out" | grep -o 'field_[^ ]*' | head -1)"
+        tag=$(printf '%s' "$out" | grep -o 'field_[^ ]*' | head -1)
+        echo "$tag" >> "$TAGS"
+        printf '  ok   %-2s %s\n' "$g" "$tag"
       else
         printf '  FAIL %-2s %s\n' "$g" "$a"
         printf '%s\n' "$out" | tail -4 | sed 's/^/       /'; fail=1
@@ -150,11 +161,10 @@ case "$MODE" in
     # TAGS MUST BE DISTINCT or two cells share a directory. The synthetic
     # campaign had this check and the field one did not -- which is how the
     # 30/150 pairs came to collide.
+    # tags were captured in the loop ABOVE. Re-running all 13 dry-runs purely
+    # to collect them doubled the login-node CPU bill for no information.
     n=$(cells | wc -l | tr -d ' ')
-    u=$(while IFS='|' read -r _ a; do
-          python hpc/standalone/run_field_das.py $a --dry-run 2>/dev/null \
-            | grep -o 'field_[^ ]*' | head -1
-        done < <(cells) | sort -u | wc -l | tr -d ' ')
+    u=$(sort -u "$TAGS" | wc -l | tr -d ' '); rm -f "$TAGS"
     [[ "$n" == "$u" ]] || { echo "TAG COLLISION: $n cells -> $u tags"; exit 5; }
     echo "all $n configs valid, all $u tags distinct -- next: --smoke" ;;
   --smoke)
