@@ -11,7 +11,7 @@
 #            an ACOUSTIC code cannot model and explains by inventing
 #            near-surface velocity. Windowing helped EVERY refiner
 #            (convsi -54, gc -26, l2 -1 m/s).
-#   --topo-air  the surface is a MEASURED 162 m ramp; a flat datum fabricates a
+#   --topo-air --grad-smooth wavelength  the surface is a MEASURED 162 m ramp; a flat datum fabricates a
 #            free-surface ghost 215 ms late = 8.6 half-cycles at 20 Hz.
 #   30 AND 150 iterations, because shallow error grew MONOTONICALLY with
 #            iterations on the synthetic and the 30-iteration cells were BEST.
@@ -168,30 +168,32 @@ cells() {
 if [[ "$SWEEP" == "opt" ]]; then
   for o in adam adamw nadam sgd; do
     [[ "$o" == "$OPT" ]] && continue
-    echo "S|--well 78A-32 --arm convsi --window --topo-air --starting route_b --optimizer $o --iterations 150"
+    echo "S|--well 78A-32 --arm convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $o --iterations 150"
   done
 elif [[ "$SWEEP" == "1" ]]; then
   # the switch at BOTH iteration counts, and with the gc refiner Park chose --
   # gc is amplitude-insensitive, which matters more on field data than on the
   # inverse-crime synthetics where convsi won.
-  echo "F|--well 78A-32 --arm switch --refiner convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 30"
-  echo "F|--well 78A-32 --arm switch --refiner gc --window --topo-air --starting route_b --optimizer $OPT --iterations 30"
-  echo "F|--well 78A-32 --arm switch --refiner gc --window --topo-air --starting route_b --optimizer $OPT --iterations 150"
-  echo "F|--well 78B-32 --arm switch --refiner convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 30"
-  echo "F|--well 78B-32 --arm switch --refiner convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 150"
+  echo "F|--well 78A-32 --arm switch --refiner convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30"
+  echo "F|--well 78A-32 --arm switch --refiner gc --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30"
+  echo "F|--well 78A-32 --arm switch --refiner gc --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 150"
+  echo "F|--well 78B-32 --arm switch --refiner convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30"
+  echo "F|--well 78B-32 --arm switch --refiner convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 150"
 fi
 cat <<EOF
-A|--well 78A-32 --arm convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 30
-A|--well 78A-32 --arm convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 150
-B|--well 78A-32 --arm convsi --window --topo-air --starting traveltime --optimizer $OPT --iterations 30
-B|--well 78A-32 --arm convsi --window --topo-air --starting traveltime --optimizer $OPT --iterations 150
-C|--well 78A-32 --arm gc --window --topo-air --starting traveltime --optimizer $OPT --iterations 30
-C|--well 78A-32 --arm gc --window --topo-air --starting traveltime --optimizer $OPT --iterations 150
-D|--well 78B-32 --arm convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 30
-D|--well 78B-32 --arm convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 150
-E|--well 78A-32 --arm convsi --topo-air --starting route_b --optimizer $OPT --iterations 30
-E|--well 78A-32 --arm convsi --topo-air --starting route_b --optimizer $OPT --iterations 150
-E|--well 78A-32 --arm switch --refiner convsi --window --topo-air --starting route_b --optimizer $OPT --iterations 150
+A|--well 78A-32 --arm convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30
+A|--well 78A-32 --arm convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 150
+B|--well 78A-32 --arm convsi --window --topo-air --grad-smooth wavelength --starting traveltime --optimizer $OPT --iterations 30
+B|--well 78A-32 --arm convsi --window --topo-air --grad-smooth wavelength --starting traveltime --optimizer $OPT --iterations 150
+C|--well 78A-32 --arm gc --window --topo-air --grad-smooth wavelength --starting traveltime --optimizer $OPT --iterations 30
+C|--well 78A-32 --arm gc --window --topo-air --grad-smooth wavelength --starting traveltime --optimizer $OPT --iterations 150
+D|--well 78B-32 --arm convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30
+D|--well 78B-32 --arm convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 150
+E|--well 78A-32 --arm convsi --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30
+G|--well 78A-32 --arm gc --window --topo-air --grad-smooth none --starting traveltime --optimizer $OPT --iterations 30
+G|--well 78A-32 --arm gc --window --topo-air --grad-smooth none --starting traveltime --optimizer $OPT --iterations 150
+E|--well 78A-32 --arm convsi --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 150
+E|--well 78A-32 --arm switch --refiner convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 150
 EOF
 }
 
@@ -245,9 +247,9 @@ case "$MODE" in
     check_fixes
     echo "smoke: route_b (the expensive starter path) and the switch arm"
     hpc/slurm/submit.sh field convsi "$OPT" -- --well 78A-32 --arm convsi --window \
-        --topo-air --starting route_b --optimizer "$OPT" --smoke
+        --topo-air --grad-smooth wavelength --starting route_b --optimizer "$OPT" --smoke
     hpc/slurm/submit.sh field convsi "$OPT" -- --well 78A-32 --arm switch \
-        --refiner convsi --window --topo-air --starting traveltime \
+        --refiner convsi --window --topo-air --grad-smooth wavelength --starting traveltime \
         --optimizer "$OPT" --smoke
     echo
     echo "WAIT for both, then run this -- it FAILS LOUDLY if they produced"

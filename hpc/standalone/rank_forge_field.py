@@ -118,10 +118,26 @@ def final_vp(d):
     return np.asarray(a[-1] if a.ndim == 3 else a, float)
 
 
+def roughness(vp, dz=10.0):
+    """RMS second vertical derivative, normalised -- 1/m, scale-free.
+
+    The critique of the first campaign was "rougher than Park, short-wavelength
+    oscillations the data do not resolve". That is a real observation and it was
+    made BY EYE. Eyeballing is how I got Park's zone depths wrong by 200-300 m.
+    So: measure it, put it in the table, and let the gradient-smoothing A/B be
+    decided by a number instead of an impression.
+    """
+    v = np.asarray(vp, float)
+    if v.ndim != 2 or v.shape[0] < 3:
+        return float("nan")
+    d2 = np.diff(v, n=2, axis=0) / (dz ** 2)
+    return float(np.sqrt(np.nanmean(d2 ** 2)) / max(np.nanmean(np.abs(v)), 1e-9))
+
+
 def table(rs):
     print(f"\n{'group':<9} {'tag':<46} {'it':>4} {'drop%':>7} "
-          f"{'loss_first':>11} {'loss_last':>11} {'vp range':>15} {'h':>5}")
-    print("-" * 118)
+          f"{'rough':>8} {'smooth':>7} {'loss_last':>11} {'vp range':>15} {'h':>5}")
+    print("-" * 122)
     for m in sorted(rs, key=lambda r: (-r["drop_pct"]
                                        if np.isfinite(r["drop_pct"]) else 1e9)):
         vr = m.get("vp_final_range") or [float("nan")] * 2
@@ -132,9 +148,13 @@ def table(rs):
             flag = "  <-- loss ROSE"
         elif not m.get("complete", True):
             flag = f"  <-- incomplete ({m.get('iterations_done')})"
+        if "_rough" not in m:
+            v = final_vp(m["_dir"])
+            m["_rough"] = roughness(v) if v is not None else float("nan")
+        gs = "lam/4" if m.get("grad_smooth", "none") != "none" else "none"
         print(f"{m['group']:<9} {m.get('tag','?'):<46} "
               f"{m.get('iterations_done', 0):>4} {m['drop_pct']:>7.1f} "
-              f"{m.get('loss_first', float('nan')):>11.3e} "
+              f"{m['_rough']:>8.2e} {gs:>7} "
               f"{m.get('loss_last', float('nan')):>11.3e} "
               f"{vr[0]:>6.0f}-{vr[1]:<8.0f} {m.get('runtime_h', 0):>5.2f}"
               f"{flag}")
@@ -157,6 +177,29 @@ def headline(rs):
               f"   -> {verdict} ({da-db:+.1f} pts)")
     print("  Route B needs NO picked first breaks; the tomography starter needs"
           "\n  ~100 hand-picked gathers. Equal performance already favours it.")
+
+
+def smoothing_ab(rs):
+    """Group C (lambda/4 smoothed) against group G (identical, unsmoothed)."""
+    print("\n=== gradient smoothing A/B (identical cells but for --grad-smooth) ===")
+    pairs = {}
+    for m in rs:
+        key = (m.get("well"), m.get("refiner"), m.get("starting"),
+               m.get("iterations"), bool(m.get("window")))
+        pairs.setdefault(key, {})[m.get("grad_smooth", "none") != "none"] = m
+    any_pair = False
+    for key, d in sorted(pairs.items(), key=lambda kv: str(kv[0])):
+        if True in d and False in d:
+            any_pair = True
+            a, b = d[True], d[False]
+            print(f"  {key[1]} {key[3]:>3} it:  roughness "
+                  f"smoothed {a['_rough']:.2e}  vs  none {b['_rough']:.2e}  "
+                  f"({100*(b['_rough']-a['_rough'])/max(b['_rough'],1e-30):+.0f}% )"
+                  f"   |  data fit {a['drop_pct']:.1f}% vs {b['drop_pct']:.1f}%")
+    if not any_pair:
+        print("  (no matched smoothed/unsmoothed pair found)")
+    print("  A smoother model that fits the data WORSE is not automatically "
+          "better;\n  read both columns before concluding.")
 
 
 def validate(rs, zones, dz, log_path=None):
@@ -232,6 +275,7 @@ def main():
     if bad:
         print(f"\n  {len(bad)} cell(s) DIVERGED: "
               f"{', '.join(m.get('tag','?') for m in bad)}")
+    smoothing_ab(rs)
     if args.validate:
         zones = tuple(float(x) for x in args.zones.split(",") if x.strip())
         validate(rs, zones, args.dz, args.log)
