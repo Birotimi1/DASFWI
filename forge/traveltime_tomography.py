@@ -22,6 +22,16 @@ eliminating the need for a starting model.
 import numpy as np
 
 
+#: STARTER BOUNDS COME FROM THE INVERSION'S BOUNDS, not a literal.
+#: They were 6500 here and 6000 there, so a starter could hand over velocities
+#: the inversion clamps on its FIRST update -- an instant, silent modification
+#: of the model you thought you started from. Birotimi caught the mismatch on
+#: the cluster; deriving it means the two cannot drift apart again.
+def _default_v_bounds():
+    from inversion.near_surface import VP_BOUND_FIELD
+    return (1400.0, float(VP_BOUND_FIELD[1]))
+
+
 # --------------------------------------------------------------------------- #
 # 1. first-break picking (STA/LTA)
 # --------------------------------------------------------------------------- #
@@ -156,7 +166,7 @@ def _enforce_coherence(picks, ratio, dt, threshold, med_win=21, tol_s=0.03,
 # 2. VSP check-shot 1-D velocity from first breaks
 # --------------------------------------------------------------------------- #
 def vsp_checkshot_velocity(pick_times, z_rcv, x_offset=0.0, smooth_n=5,
-                           v_bounds=(1400.0, 6000.0), surface_anchor=True,
+                           v_bounds=None, surface_anchor=True,
                            bin_m=40.0):
     """1-D interval velocity v(z) from a near-offset VSP first-break curve.
 
@@ -167,6 +177,7 @@ def vsp_checkshot_velocity(pick_times, z_rcv, x_offset=0.0, smooth_n=5,
     v_max. Binning to intervals where the traveltime change spans many samples
     restores a physical velocity.
     """
+    v_bounds = _default_v_bounds() if v_bounds is None else v_bounds
     z = np.asarray(z_rcv, float)
     t = np.asarray(pick_times, float)
     ok = np.isfinite(t) & np.isfinite(z) & (z > 0)
@@ -221,12 +232,13 @@ def vsp_checkshot_velocity(pick_times, z_rcv, x_offset=0.0, smooth_n=5,
 # 3. assemble a 2-D starting model
 # --------------------------------------------------------------------------- #
 def build_starting_model(z_prof, v_prof, nz, nx, dz, smooth_nodes=4,
-                         v_bounds=(1400.0, 6500.0)):
+                         v_bounds=None):
     """Interpolate a 1-D v(z) onto the grid and tile across x.
 
     Depths outside the profile are held at the nearest profile value
     (constant extension). Returns vp [nz, nx] float64.
     """
+    v_bounds = _default_v_bounds() if v_bounds is None else v_bounds
     z_nodes = np.arange(nz) * dz
     v_col = np.interp(z_nodes, z_prof, v_prof,
                       left=v_prof[0], right=v_prof[-1])
@@ -239,12 +251,13 @@ def build_starting_model(z_prof, v_prof, nz, nx, dz, smooth_nodes=4,
 
 def starting_model_from_gathers(gathers, dt, z_rcv, x_offset, nz, nx, dz,
                                 sta_s=0.01, lta_s=0.05, threshold=3.0,
-                                min_time_s=0.0, v_bounds=(1400.0, 6500.0)):
+                                min_time_s=0.0, v_bounds=None):
     """End-to-end: near-offset shot gather [nt, C] -> 2-D vp starting model.
 
     Pass the SINGLE nearest-offset shot's gather (time first) and its source
     offset. Returns (vp_2d, z_prof, v_prof, picks) for inspection.
     """
+    v_bounds = _default_v_bounds() if v_bounds is None else v_bounds
     picks = pick_first_breaks(gathers, dt, sta_s=sta_s, lta_s=lta_s,
                               threshold=threshold, min_time_s=min_time_s)
     z_prof, v_prof = vsp_checkshot_velocity(picks, z_rcv, x_offset=x_offset,
