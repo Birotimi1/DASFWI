@@ -232,19 +232,31 @@ def main():
     # A real arrival is CONTINUOUS across a fibre, so scatter about a smooth
     # trend is the test. Site-agnostic: it assumes only continuity.
     from forge.traveltime_tomography import pick_first_breaks
-    d0 = d[0] if d.ndim == 3 else d
-    pk = pick_first_breaks(d0, g["dt"], min_time_s=0.02)
+    # QC THE NEAREST SHOT. d[0] is whatever came first, and after the
+    # shot-spread fix that is a FAR offset, where the arrival is weak and
+    # emergent -- judging the picker there tests the hardest case and calls it
+    # the typical one. Picking quality degrades smoothly with offset
+    # (measured: 97% / 74% / 48% picked at +6 / -784 / -1547 m), which is
+    # physics, not a bug.
+    d_pk = d_near[0] if d_near.ndim == 3 else d_near
+    pk = pick_first_breaks(d_pk[:, ordr], g["dt"], min_time_s=0.02)
     fin = np.isfinite(pk)
-    if fin.sum() >= 8:
-        idx = np.arange(pk.size)[fin]
-        trend = np.poly1d(np.polyfit(idx, pk[fin], 3))(idx)
-        scat = float(np.median(np.abs(pk[fin] - trend)))
+    if fin.sum() >= 32:
+        # LOCAL median deviation, not a fit. A global cubic cannot represent a
+        # real VSP moveout curve, so it reported 41-115 ms of "scatter" on picks
+        # that are locally smooth to 0-2 ms -- the metric was failing, not the
+        # picks, and it would have blocked a launch on a false alarm.
+        v = pk[fin]
+        h = 15
+        med = np.array([np.median(v[max(0, k - h):k + h + 1])
+                        for k in range(v.size)])
+        scat = float(np.median(np.abs(v - med)))
         frac = float(fin.mean())
-        # 3 half-periods of scatter means the picks are not on one event
-        tol = 1.5 / args.f0
-        chk(scat < tol and frac > 0.5, "first-break picks",
-            f"{fin.sum()}/{pk.size} picked ({frac*100:.0f}%), scatter about a "
-            f"smooth trend {scat*1e3:.1f} ms (limit {tol*1e3:.0f} ms)")
+        tol = 0.25 / (2.0 * args.f0)          # a quarter of T/2
+        chk(scat < tol and frac > 0.6, "first-break picks",
+            f"{fin.sum()}/{pk.size} picked ({frac*100:.0f}%) on the nearest "
+            f"shot, local scatter {scat*1e3:.2f} ms "
+            f"(limit {tol*1e3:.1f} ms = T/8)")
     else:
         chk(False, "first-break picks",
             f"only {int(fin.sum())} of {pk.size} channels picked -- the "
