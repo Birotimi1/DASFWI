@@ -351,17 +351,23 @@ def main():
            + ("_g" if args.grad_smooth != "none" else "")
            + ("_smoke" if args.smoke else ""))
     out_dir = OUT_ROOT / tag
-    out_dir.mkdir(parents=True, exist_ok=True)
     print(f"=== FORGE field {tag} on {device}, {iterations} iterations ===",
           flush=True)
 
     if args.dry_run:
+        # A DRY RUN MUST NOT TOUCH THE FILESYSTEM. mkdir used to sit above this
+        # return, so validating the campaign created one empty directory per
+        # cell -- 53 of them here, and a `--dry-run` is run far more often than
+        # a real job. They also make `ls results/` look like completed work and
+        # break any "does this cell have results yet" check. PSC had just warned
+        # about inode exhaustion when I noticed.
         print(f"    dry-run OK: {tag}", flush=True)
         print(f"      arm={arm} refiner={args.refiner} robust={args.robust} "
               f"start={args.starting} opt={args.optimizer} iters={iterations} "
               f"bands={bands} window={args.window} topo_air={args.topo_air}",
               flush=True)
         return
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # [3] load real field data (strain rate) + geometry
     bundle = load_forge_field(well=args.well, n_shots=args.shots,
