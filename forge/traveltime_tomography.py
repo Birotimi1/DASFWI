@@ -73,32 +73,16 @@ def pick_first_breaks(gather, dt, sta_s=0.01, lta_s=0.05, threshold=3.0,
 # 2. VSP check-shot 1-D velocity from first breaks
 # --------------------------------------------------------------------------- #
 def vsp_checkshot_velocity(pick_times, z_rcv, x_offset=0.0, smooth_n=5,
-                           v_bounds=(1400.0, 6500.0), surface_anchor=True):
+                           v_bounds=(1400.0, 6000.0), surface_anchor=True,
+                           bin_m=40.0):
     """1-D interval velocity v(z) from a near-offset VSP first-break curve.
 
-    surface_anchor: a downhole fiber gives NO information above its shallowest
-    channel. Extending the shallowest INTERVAL velocity upward is wrong (it can
-    make the whole overburden unphysically slow). Instead, prepend a z=0 point
-    at the AVERAGE velocity to the shallowest receiver (z_top / t_vert_top),
-    which the first break does constrain. This is the physically correct shallow
-    extrapolation for a deep VSP.
-
-    Straight-ray deskew to vertical: for a receiver at depth z and a source at
-    horizontal offset x, the straight-ray path length is sqrt(z^2 + x^2), so
-    the equivalent VERTICAL time is t_vert = t * z / sqrt(z^2 + x^2). Then
-    v(z) = dz/dt_vert from a smoothed, monotonic t_vert(z). Accurate for deep
-    receivers (z >> x); shallow, wide-offset picks are the approximation's
-    weak point (documented).
-
-    Args:
-        pick_times [C], z_rcv [C]: first-break times [s] and receiver depths [m]
-            (NaN picks are dropped).
-        x_offset: source-to-well horizontal offset [m].
-        smooth_n: moving-average window (samples) on t(z) before differencing.
-        v_bounds: clip the interval velocity to this range.
-
-    Returns:
-        (z_sorted [K], v_of_z [K]): depths and interval velocities.
+    Interval velocity is computed over COARSE depth bins (``bin_m``), not per
+    channel. At ~1 m channel spacing and 1 ms sampling, per-channel dz/dt is
+    dominated by pick quantization: a one-sample tie between adjacent channels
+    forces the interval to the velocity ceiling, railing the whole profile to
+    v_max. Binning to intervals where the traveltime change spans many samples
+    restores a physical velocity.
     """
     z = np.asarray(z_rcv, float)
     t = np.asarray(pick_times, float)
@@ -109,29 +93,45 @@ def vsp_checkshot_velocity(pick_times, z_rcv, x_offset=0.0, smooth_n=5,
     if z.size < 3:
         raise ValueError("need >= 3 valid first-break picks")
 
+    # straight-ray deskew to vertical traveltime
     t_vert = t * z / np.sqrt(z ** 2 + x_offset ** 2)
-    # smooth, then enforce STRICTLY increasing vertical time so dz/dt is finite
-    # everywhere (equal consecutive times -> inf/NaN velocity otherwise). Ties
-    # are broken by the minimum increment consistent with the upper velocity
-    # bound (dt >= dz / v_max), which also caps the implied interval velocity.
-    if smooth_n > 1:
+
+    # bin to coarse depth intervals; median pick time per bin (robust to outliers)
+    z0, z1 = z.min(), z.max()
+    edges = np.arange(z0, z1 + bin_m, bin_m)
+    zc, tc = [], []
+    for a, b in zip(edges[:-1], edges[1:]):
+        m = (z >= a) & (z < b)
+        if m.any():
+            zc.append(float(z[m].mean()))
+            tc.append(float(np.median(t_vert[m])))
+    zc, tc = np.asarray(zc), np.asarray(tc)
+    if zc.size < 2:
+        raise ValueError("too few depth bins; reduce bin_m")
+
+    # enforce strictly increasing t over the COARSE grid (bin spacing ~bin_m, so
+    # the minimum increment corresponds to v_max over a real interval, not 1 m)
+    tc_fixed = np.copy(tc)
+    for i in range(1, tc_fixed.size):
+        dz_bin = zc[i] - zc[i - 1]
+        t_min_inc = dz_bin / v_bounds[1]
+        tc_fixed[i] = max(tc_fixed[i], tc_fixed[i - 1] + t_min_inc)
+
+    # interval velocity between bin centres, then clip to physical bounds
+    v_bin = np.diff(zc) / np.diff(tc_fixed)
+    v_bin = np.clip(v_bin, *v_bounds)
+    z_bin = 0.5 * (zc[1:] + zc[:-1])
+
+    if smooth_n > 1 and v_bin.size >= smooth_n:
         k = np.ones(smooth_n) / smooth_n
-        t_vert = np.convolve(t_vert, k, mode="same")
-    dz = np.diff(z)
-    t_min_inc = dz / v_bounds[1]                   # smallest physical dt per step
-    t_fixed = np.empty_like(t_vert)
-    t_fixed[0] = t_vert[0]
-    for i in range(1, len(t_vert)):
-        t_fixed[i] = max(t_vert[i], t_fixed[i - 1] + t_min_inc[i - 1])
-    v = np.gradient(z, t_fixed)                     # dz/dt, guaranteed finite
-    v = np.clip(np.nan_to_num(v, nan=v_bounds[0],
-                              posinf=v_bounds[1], neginf=v_bounds[0]),
-                *v_bounds)
-    if surface_anchor and t_fixed[0] > 0:
-        v_avg = float(np.clip(z[0] / t_fixed[0], *v_bounds))   # avg to fiber top
-        z = np.concatenate([[0.0], z])
-        v = np.concatenate([[v_avg], v])
-    return z, v
+        v_bin = np.convolve(v_bin, k, mode="same")
+
+    z_out, v_out = z_bin, v_bin
+    if surface_anchor and tc_fixed[0] > 0:
+        v_avg = float(np.clip(zc[0] / tc_fixed[0], *v_bounds))
+        z_out = np.concatenate([[0.0], z_out])
+        v_out = np.concatenate([[v_avg], v_out])
+    return z_out, v_out
 
 
 # --------------------------------------------------------------------------- #
