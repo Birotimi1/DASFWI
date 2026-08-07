@@ -222,6 +222,34 @@ def main():
         + (f"  [v={ori['v_median']:+.0f} m/s, {ori['n_usable']}/{ori['n_total']}]"
            if "v_median" in ori else ""))
 
+    # ---- 5c. FIRST-BREAK PICKS: do they follow a COHERENT arrival? -------- #
+    # The picks fed the `traveltime` starting model, and on FORGE they landed in
+    # the 0.05-0.25 s pre-arrival noise while the real arrival was at
+    # 0.42-0.65 s. The resulting starter came out SATURATED at the 6000 m/s
+    # upper bound -- a constant block with no information -- so every
+    # `--starting traveltime` cell was an invalid test rather than a bad result.
+    # Nothing flagged it; the run completed and the loss fell.
+    # A real arrival is CONTINUOUS across a fibre, so scatter about a smooth
+    # trend is the test. Site-agnostic: it assumes only continuity.
+    from forge.traveltime_tomography import pick_first_breaks
+    d0 = d[0] if d.ndim == 3 else d
+    pk = pick_first_breaks(d0, g["dt"], min_time_s=0.02)
+    fin = np.isfinite(pk)
+    if fin.sum() >= 8:
+        idx = np.arange(pk.size)[fin]
+        trend = np.poly1d(np.polyfit(idx, pk[fin], 3))(idx)
+        scat = float(np.median(np.abs(pk[fin] - trend)))
+        frac = float(fin.mean())
+        # 3 half-periods of scatter means the picks are not on one event
+        tol = 1.5 / args.f0
+        chk(scat < tol and frac > 0.5, "first-break picks",
+            f"{fin.sum()}/{pk.size} picked ({frac*100:.0f}%), scatter about a "
+            f"smooth trend {scat*1e3:.1f} ms (limit {tol*1e3:.0f} ms)")
+    else:
+        chk(False, "first-break picks",
+            f"only {int(fin.sum())} of {pk.size} channels picked -- the "
+            f"traveltime starter cannot be built from this")
+
     # a modestly shifted copy stands in for a synthetic: enough mismatch to
     # give a non-zero gradient, not so much that the misfit saturates
     syn = np.roll(d, n_small, axis=1)
