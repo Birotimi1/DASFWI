@@ -653,6 +653,19 @@ def main():
         m = dict(
             tag=tag, well=args.well, n_shots=bundle["n_shots"], device=device,
             optimizer=args.optimizer,
+            # >>> RECORD THE GRID AND THE GEOMETRY. <<<
+            # Without these, results from different grids sit in one directory
+            # indistinguishable: 21 cells accumulated across the pre- and
+            # post-geometry-fix runs and nothing in metrics.json could tell them
+            # apart. The ranker also had to be TOLD dz with a flag, defaulted to
+            # the old 20 m, and reported zone boundaries at twice their depth.
+            # A result that does not carry its own configuration is not
+            # interpretable later.
+            dz=g["dz"], dx=g["dx"], nz=int(nz), nx=int(nx),
+            nt=int(g["nt"]), dt=float(g["dt"]), f0=float(args.f0),
+            chan_z_min=float(np.min(bundle["channel_z_grid"])),
+            chan_z_max=float(np.max(bundle["channel_z_grid"])),
+            n_channels=int(len(bundle["channel_z_grid"])),
             # `diverged` was never set here, so the ranker could not filter a
             # dead cell. Field runs have no truth, so the ONLY divergence
             # signals are the loss and the model itself.

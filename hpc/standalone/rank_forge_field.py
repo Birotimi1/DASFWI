@@ -82,9 +82,19 @@ def rows(root):
         # supply. Park report 51.7% for INV2 on first-arrival mismatch; this is
         # the full waveform misfit, so it is a RELATED but not identical
         # quantity and is not claimed as a like-for-like comparison.
-        m["drop_pct"] = (100.0 * (lo - hi) / lo
-                         if lo and hi is not None and np.isfinite(lo)
-                         and lo != 0 else float("nan"))
+        # >>> A CORRELATION MISFIT IS NEGATIVE, AND MORE NEGATIVE IS BETTER. <<<
+        # gc went -3.669e-02 -> -2.754e+01, a 750x better fit, and the old
+        # formula 100*(lo-hi)/lo printed -74963%, ranking the best-behaved cells
+        # dead last. Normalise by |lo| so the sign of the loss cannot invert the
+        # verdict, and mark sign-varying misfits so they are not compared
+        # against norm-type ones -- a 750x correlation gain and an 88% L2
+        # reduction are different quantities and ranking them together is
+        # meaningless whichever formula is used.
+        m["neg_misfit"] = bool(lo is not None and lo < 0)
+        if lo and hi is not None and np.isfinite(lo) and np.isfinite(hi) and lo != 0:
+            m["drop_pct"] = 100.0 * (lo - hi) / abs(lo)
+        else:
+            m["drop_pct"] = float("nan")
         m["group"] = _group(m)
         out.append(m)
     return out
@@ -138,10 +148,17 @@ def table(rs):
     print(f"\n{'group':<9} {'tag':<46} {'it':>4} {'drop%':>7} "
           f"{'rough':>8} {'smooth':>7} {'loss_last':>11} {'vp range':>15} {'h':>5}")
     print("-" * 122)
-    for m in sorted(rs, key=lambda r: (-r["drop_pct"]
+    for m in sorted(rs, key=lambda r: (bool(r.get("neg_misfit")),
+                                       -r["drop_pct"]
                                        if np.isfinite(r["drop_pct"]) else 1e9)):
         vr = m.get("vp_final_range") or [float("nan")] * 2
         flag = ""
+        # A correlation misfit is unbounded below, so its "drop%" is not on the
+        # same scale as a norm's and the two must not be read as a ranking.
+        # Marked rather than hidden: the number is still the right measure of
+        # that cell's own progress.
+        if m.get("neg_misfit"):
+            flag += "  [corr misfit -- drop% NOT comparable to norm cells]"
         if m.get("diverged"):
             flag = "  <-- DIVERGED"
         elif not m.get("loss_decreased", True):
@@ -258,8 +275,10 @@ def main():
     ap.add_argument("--root", default=str(ROOT))
     ap.add_argument("--validate", action="store_true",
                     help="also run cross-well / zone / log validation")
-    ap.add_argument("--dz", type=float, default=20.0,
-                    help="model dz in m; MUST match the run (driver default 20)")
+    ap.add_argument("--dz", type=float, default=None,
+                    help="model dz in m. Default: READ FROM metrics.json, which "
+                         "is authoritative. Only needed for runs predating that "
+                         "field.")
     ap.add_argument("--zones", default=",".join(str(z) for z in ZONES_M))
     ap.add_argument("--log", default=None, help="path to the sonic LAS")
     args = ap.parse_args()
@@ -278,7 +297,16 @@ def main():
     smoothing_ab(rs)
     if args.validate:
         zones = tuple(float(x) for x in args.zones.split(",") if x.strip())
-        validate(rs, zones, args.dz, args.log)
+        dz = args.dz
+        if dz is None:
+            dzs = {m.get("dz") for m in rs if m.get("dz")}
+            if len(dzs) > 1:
+                print(f"  *** MIXED GRIDS in one directory: dz = {sorted(dzs)}. "
+                      f"These runs are NOT comparable; separate them before "
+                      f"reading anything below.")
+            dz = sorted(dzs)[0] if dzs else 20.0
+            print(f"  (dz = {dz:g} m, from metrics.json)")
+        validate(rs, zones, dz, args.log)
     print("\nNOTE: ranking is by DATA FIT, the only field-measurable quantity."
           "\n      A good fit is not a good model -- see the validation block.")
     return 0
