@@ -90,6 +90,13 @@ def rows(root):
         # against norm-type ones -- a 750x correlation gain and an 88% L2
         # reduction are different quantities and ranking them together is
         # meaningless whichever formula is used.
+        # PREFER THE RAW MISFIT when the cell recorded one. The switch arms
+        # report E/||grad E|| divided by a moving EMA scale, so their
+        # loss_first/loss_last are not on a common footing and any percent
+        # reduction from them is arithmetic on two different quantities.
+        if m.get("raw_loss_finite") and m.get("raw_loss_first") is not None:
+            lo, hi = m["raw_loss_first"], m["raw_loss_last"]
+            m["loss_is_raw"] = True
         m["neg_misfit"] = bool(lo is not None and lo < 0)
         if lo and hi is not None and np.isfinite(lo) and np.isfinite(hi) and lo != 0:
             m["drop_pct"] = 100.0 * (lo - hi) / abs(lo)
@@ -159,6 +166,9 @@ def table(rs):
         # that cell's own progress.
         if m.get("neg_misfit"):
             flag += "  [corr misfit -- drop% NOT comparable to norm cells]"
+        if m.get("raw_loss_finite") is False:
+            flag += "  [NO raw loss recorded -- drop% is from a normalised, "\
+                    "drifting scale; treat as unmeasured]"
         if m.get("diverged"):
             flag = "  <-- DIVERGED"
         elif not m.get("loss_decreased", True):

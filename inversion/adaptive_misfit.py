@@ -122,6 +122,16 @@ class BlendedMisfit(Misfit):
         self.loss_lo, self.loss_hi = loss_lo, loss_hi
         self.beta, self.normalize, self.eps = beta, normalize, eps
         self._ema = {"lo": None, "hi": None}
+        # >>> RAW, UN-NORMALISED loss history. <<<
+        # forward() returns E / ||dE/dsyn||, which is what makes lambda mean
+        # "equal gradient contribution" -- correct for BLENDING, and the reason
+        # this class exists. But it is NOT a loss: on FORGE DAS the gradient
+        # norm is ~1e-10, so the returned number reached 1.9e18, and because the
+        # EMA scale MOVES every iteration, loss_first and loss_last are divided
+        # by different numbers. Reporting that as a percent reduction compares
+        # nothing. The optimisation is unchanged (it is validated on Marmousi);
+        # what was broken is that the normalised value was the only one recorded.
+        self.raw_history = []
         self.set_lambda(lam)
 
     # -- schedule control ---------------------------------------------------
@@ -171,17 +181,28 @@ class BlendedMisfit(Misfit):
 
         if lam <= 0.0:                                   # short-circuit: lo only
             e = self._eval(self.loss_lo, a, b)
+            self._record(e)
             return e / self._scale("lo", e, wrt) if self.normalize else e
         if lam >= 1.0:                                   # short-circuit: hi only
             e = self._eval(self.loss_hi, a, b)
+            self._record(e)
             return e / self._scale("hi", e, wrt) if self.normalize else e
 
         e_lo = self._eval(self.loss_lo, a, b)
         e_hi = self._eval(self.loss_hi, a, b)
+        self._record((1.0 - lam) * e_lo + lam * e_hi)
         if not self.normalize:
             return (1.0 - lam) * e_lo + lam * e_hi
         return ((1.0 - lam) * e_lo / self._scale("lo", e_lo, wrt)
                 + lam * e_hi / self._scale("hi", e_hi, wrt))
+
+    def _record(self, e):
+        """Keep the RAW value so progress is measurable. See raw_history."""
+        try:
+            self.raw_history.append(float(e.detach()) if torch.is_tensor(e)
+                                    else float(e))
+        except (TypeError, ValueError):          # never let logging kill a run
+            pass
 
 
 # --------------------------------------------------------------------------- #

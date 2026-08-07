@@ -164,6 +164,18 @@ def pick_device(arg=None):
     return _pd(arg)
 
 
+def _raw_loss_fields(loss_fn):
+    """first/last RAW misfit from a BlendedMisfit, if this arm uses one."""
+    hist = getattr(loss_fn, "raw_history", None)   # ConditionedMisfit delegates
+    if not hist:
+        return {}
+    good = [v for v in hist if np.isfinite(v)]
+    if not good:
+        return {"raw_loss_finite": False}
+    return {"raw_loss_first": float(good[0]), "raw_loss_last": float(good[-1]),
+            "raw_loss_n": len(good), "raw_loss_finite": True}
+
+
 def gradient_start_model(nz, nx, dz):
     """1-D linear vp gradient VP_TOP -> VP_BOTTOM broadcast over x."""
     zcol = np.linspace(VP_TOP, VP_BOTTOM, nz)
@@ -677,6 +689,12 @@ def main():
             complete=bool(complete), runtime_h=round(hours, 3),
             loss_first=float(iter_loss[0]) if len(iter_loss) else None,
             loss_last=float(iter_loss[-1]) if len(iter_loss) else None,
+            # RAW misfit, un-normalised. The switch arms report loss values like
+            # 1.9e18 because BlendedMisfit returns E/||grad E|| -- meaningful for
+            # weighting the two terms, meaningless as a progress measure, and
+            # divided by a DIFFERENT EMA scale each iteration. Percent reduction
+            # must be computed from these instead.
+            **_raw_loss_fields(loss_fn),
             loss_decreased=bool(len(iter_loss) > 1 and iter_loss[-1] < iter_loss[0]),
             losses_finite=bool(np.isfinite(iter_loss).all()),
             grad_finite=bool(np.isfinite(grad_final).all()),
