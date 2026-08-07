@@ -182,3 +182,49 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# --------------------------------------------------------------------------- #
+# shared renderer -- ONE definition of "what a velocity panel looks like"
+# --------------------------------------------------------------------------- #
+def velocity_panel(ax, vp, dx, dz, vmin=1000.0, vmax=6000.0, ground=None,
+                   z_max_km=None, well_x_km=None, title="", cmap=None):
+    """Draw a Vp section the way Park draw theirs, so ours can sit beside it.
+
+    Three things the driver's plain `cmap="jet"` got wrong, all of which made
+    our figures unreadable next to theirs:
+
+      AIR IS WHITE, not dark blue. Rendering 340 m/s air on the velocity scale
+      spends a third of the colour range on a layer that carries no
+      information, and it reads as a real low-velocity anomaly. Park leave it
+      blank. Masked here, and the mask is DERIVED from the ground surface.
+
+      BLUE = SLOW, RED/BROWN = FAST, on a fixed scale. Fixed matters: a
+      per-panel autoscale makes the starting model and the inverted model use
+      DIFFERENT colours for the same velocity, which is how a figure can imply
+      a change that is not there.
+
+      DEPTH CLIPPED TO ILLUMINATION. Plotting below the deepest receiver shows
+      the starting model dressed up as a result -- no data constrains it. Pass
+      z_max_km to cut the panel where the fibre ends.
+    """
+    v = np.asarray(vp, float).copy()
+    if ground is not None:
+        gz = np.atleast_1d(np.asarray(ground, float))
+        if gz.size == 1:
+            gz = np.full(v.shape[1], float(gz))
+        for j in range(v.shape[1]):
+            v[: int(round(gz[j] / dz)), j] = np.nan      # -> white
+    nz, nx = v.shape
+    ext = [0.0, (nx - 1) * dx / 1000.0, (nz - 1) * dz / 1000.0, 0.0]
+    cm = matplotlib.cm.get_cmap(cmap) if isinstance(cmap, str) else (
+        cmap or PARK_CMAP)
+    cm = cm.copy()
+    cm.set_bad("white")
+    im = ax.imshow(v, extent=ext, aspect="auto", cmap=cm, vmin=vmin, vmax=vmax,
+                   interpolation="bilinear")
+    if z_max_km is not None:
+        ax.set_ylim(z_max_km, 0.0)
+    if well_x_km is not None:
+        ax.axvline(well_x_km, color="k", ls="--", lw=1.0)
+    ax.set(title=title, xlabel="x [km]", ylabel="z [km]")
+    return im

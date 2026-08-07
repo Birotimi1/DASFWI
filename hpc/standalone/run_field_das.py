@@ -485,6 +485,22 @@ def main():
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, **SCHEDULER)
     grad_mask = np.ones((nz, nx))
     grad_mask[:max(GRAD_MASK_TOP, n_air), :] = 0        # never update the air
+    # >>> AND NEVER UPDATE BELOW THE ILLUMINATION. <<<
+    # The fibre ends at ~1.1 km; the grid runs a little deeper because the
+    # wavefield needs room. Cells below the deepest receiver are constrained by
+    # NO data, so an unmasked gradient is free to invent structure there -- and
+    # it does, which is a large part of why our sections look nothing like
+    # Park's. Park stop at the fibre. Tapered rather than cut, so the mask does
+    # not itself imprint a horizontal edge on the model.
+    z_deep = float(np.max(bundle["channel_z_grid"]))
+    k_deep = int(round(z_deep / g["dz"]))
+    taper = max(1, int(round(0.5 * VP_BOUND[1] / args.f0 / g["dz"])))  # lambda/2
+    for k in range(k_deep, nz):
+        grad_mask[k, :] = max(0.0, 1.0 - (k - k_deep) / taper)
+    print(f"    illumination mask: full weight to {z_deep:.0f} m "
+          f"(row {k_deep}), tapered to zero over {taper} rows "
+          f"({taper*g['dz']:.0f} m); {nz-k_deep} of {nz} rows are below the "
+          f"deepest channel", flush=True)
     settings = RUN_SETTINGS[args.refiner if arm in SOLO_ARMS else args.refiner]
 
     f_eff = args.f0
@@ -721,16 +737,23 @@ def main():
     vp_final, iter_loss, metrics = _save(iterations, hours, complete=True)
     print(json.dumps(metrics, indent=2), flush=True)
 
+    from forge.plot_field_result import velocity_panel
     fig, axes = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
-    ext = [0, (nx - 1) * g["dx"] / 1000, (nz - 1) * g["dz"] / 1000, 0]
+    # clip the panel at the deepest RECEIVER: below it nothing constrains the
+    # model, so plotting further shows the starting model dressed as a result.
+    z_max_km = float(np.max(bundle["channel_z_grid"])) / 1000.0
+    ground_m = (ns.surface_profile(bundle["src_x_grid"] * g["dx"],
+                                   bundle["grid"]["src_z_grid"] * g["dz"],
+                                   nx, g["dx"])
+                if args.topo_air else None)
     for ax, (d, ttl) in zip(axes[:2], [(vp_init, f"initial ({args.starting})"),
                                        (vp_final, f"inverted {tag}")]):
-        im = ax.imshow(d, extent=ext, cmap="jet",
-                       vmin=VP_BOUND[0], vmax=VP_BOUND[1])
-        ax.set(title=f"vp {ttl} [m/s]", xlabel="x [km]", ylabel="z [km]")
-        # mark the well
-        ax.axvline(bundle["well_x_index"] * g["dx"] / 1000, color="w", ls="--", lw=1)
-        fig.colorbar(im, ax=ax, shrink=0.8)
+        im = velocity_panel(ax, d, g["dx"], g["dz"],
+                            vmin=VP_BOUND[0], vmax=VP_BOUND[1],
+                            ground=ground_m, z_max_km=z_max_km,
+                            well_x_km=bundle["well_x_index"] * g["dx"] / 1000,
+                            title=f"vp {ttl} [m/s]")
+        fig.colorbar(im, ax=ax, shrink=0.8, label="Vp [m/s]")
     axes[2].plot(iter_loss, "k.-")
     axes[2].set(title="loss", xlabel="iteration")
     fig.savefig(out_dir / "final.png", dpi=150)

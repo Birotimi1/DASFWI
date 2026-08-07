@@ -993,3 +993,74 @@ Bridges-2 checkout (`/ocean/projects/ees260010p/brotimi/DASFWI`) are
 authoritative, and the cluster clone is unaffected by this. That push habit is
 what makes this a two-minute recovery instead of a lost day.
 
+---
+
+# STATUS 2026-08-07 — FORGE FIELD: root causes found, one clean run pending
+
+See `CODEBASE.md` for the script-by-script map.
+
+## What the first field campaign actually showed
+
+13 cells completed with falling losses and produced **nothing usable**. Three
+root causes, all found by inspecting figures rather than metrics:
+
+1. **Channel depths were wrong.** Byte 41–44 is `RECTVD` per the acquisition's
+   own textual header; segyio names it `ReceiverGroupElevation`. Receivers were
+   placed at 2492–3522 m and reversed. True: 0–1013 m (78A-32), 0–1209 m
+   (78B-32) — confirmed independently by moveout physics AND by Park's text
+   ("1010 and 1206 recording channels spaced 1 m apart to 1 and 1.2 km depth").
+
+2. **First-break picks were on noise.** They sat at 0.05–0.25 s while the
+   arrival was at 0.42–0.65 s, so the `traveltime` starter came out saturated
+   at the 6000 m/s ceiling — a constant block with no information. **Groups B
+   and C were invalid tests, not bad results.**
+
+3. **The gradient was unmasked below illumination**, free to invent structure
+   under the fibre.
+
+## >>> THE RESULT THAT MATTERS: ROUTE B WORKS ON FIELD DATA <<<
+
+With the geometry fixed, the **Route B wave-equation cross-correlation starter
+— which uses NO picked first breaks —** produces a physically sensible model:
+~1200 m/s at surface → 3000 at 0.4 km → 4000 at 0.75 km → 5500 below 1 km.
+**That is Park's three-zone structure**, from a starter that needs none of
+their ~100 hand-picked shot gathers.
+
+The pick-based tomography starter, by contrast, was a saturated block. On this
+data Route B did not merely match picking — picking failed outright.
+
+**Open problem:** the *inversion* then degrades that good starter, adding
+vertical fingering at 0.25–0.75 km and blowing up where illumination dies. The
+starting model currently resembles Park more than the inverted model does.
+
+## Changes made in response (all free, none yet run)
+
+- λ/4 **gradient smoothing enabled** on every cell, with an unsmoothed control
+  (group G) so the effect is measured. Was implemented and never switched on.
+- **Gradient masked below the deepest receiver**, tapered over λ/2.
+- **Plotting matches Park**: white air, blue slow → brown fast, fixed scale,
+  depth clipped to illumination. One shared `velocity_panel()`.
+- **Picker fixed**: dominant event + walk back to onset. Scatter 75.5 → 0.62 ms.
+- **Preflight now 15 checks**, including fibre orientation and pick coherence.
+
+## Next: ONE campaign, 18 cells, ~63 SU
+
+Groups A/B (Route B vs tomography — the transferability claim), C (Park
+baseline), D (78B-32 cross-validation), E (ablations), F (switch), G
+(unsmoothed control). Every config at **both 30 and 150 iterations**, enforced
+by the submit gate.
+
+If smoothing does not fix the artifacts, Tikhonov/TV is wired in ADFWI
+(`regularization_fn` on `AcousticFWI`) and unused — that is the next lever, not
+another optimizer sweep.
+
+## Known open questions
+
+- **DAS QC is INCONCLUSIVE**, not clean: the neighbour span is 2.57 wavelengths
+  at 128 Hz because channels are grid-decimated. Must be run on the **native
+  1 m fibre** over the inversion band before any coupling claim.
+- **Park invert both wells together** (~2216 channels/shot); we invert one well
+  at ~103. Their illumination is far better and this may be why their sections
+  are smoother.
+- **Multiscale untested on FORGE.** The Marmousi negative may not transfer:
+  Marmousi is 1.06 octaves and grid-capped, FORGE is 4.4.
