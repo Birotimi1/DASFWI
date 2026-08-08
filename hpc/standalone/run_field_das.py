@@ -93,7 +93,13 @@ WELL = "78A-32"        # 78A-32 (1010 ch) | 78B-32 (1206 ch)
 # measured 30 iterations as BETTER than 150 (shallow error grows monotonically),
 # which is also what Park used. We were spending our budget on iterations that
 # made the model worse instead of on data.
-N_SHOTS = 100          # walkaway shots to load (318 available)
+# DEFAULT STAYS AT 20 until the sweep MEASURES that more shots help. Raising it
+# on a hypothesis silently changed every baseline cell to 100 shots, made them
+# duplicates of the test cells, and destroyed comparability with the 18 results
+# already on disk -- caught only by the tag-collision gate. The whole point of
+# the sweep is to earn this number, so it is passed explicitly by SWEEP=shots
+# and becomes the default when the evidence exists.
+N_SHOTS = 20           # walkaway shots to load (318 available; see SWEEP=shots)
 #: shots per gradient step. A full 100-shot wavefield is ~40 GiB; batching keeps
 #: it near 8 GiB and makes the gradient stochastic, which adam/nadam handle and
 #: line-search methods do not (lbfgs/nlcg are refused by this driver anyway).
@@ -400,6 +406,13 @@ def main():
            + ("_w" if args.window else "")
            + ("_c" if args.channel_weight else "")
            + ("_g" if args.grad_smooth != "none" else "")
+           # SHOT COUNT IN THE TAG. Without it the illumination sweep collapsed
+           # 17 cells into 13 tags -- 60-, 100- and 20-shot runs sharing one
+           # output directory. Caught by the gate, which is the eighth time this
+           # exact class has appeared: ANY argument that changes the result must
+           # appear in the tag, and the default is what hides it (only non-default
+           # values were ever encoded).
+           + (f"_s{args.shots}" if args.shots != N_SHOTS else "")   # 20 = default
            + ("_smoke" if args.smoke else ""))
     out_dir = OUT_ROOT / tag
     print(f"=== FORGE field {tag} on {device}, {iterations} iterations ===",
