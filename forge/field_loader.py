@@ -223,6 +223,16 @@ def project_to_2d(src_xyz, rcv_xyz):
     _, _, vt = np.linalg.svd(d, full_matrices=False)
     axis = vt[0]
     axis = axis / np.linalg.norm(axis)
+    # >>> FIX THE SIGN. <<<
+    # SVD returns a principal axis with an ARBITRARY sign, so the section could
+    # come out mirrored depending on nothing but the data. Ours did: our wells
+    # ran 78B, 78A, 58-32 left to right while Park's run 58-32, 78A, 78B --
+    # every figure was a mirror image of theirs, which makes visual comparison
+    # actively misleading rather than merely inconvenient.
+    # Orient toward increasing EASTING (west on the left, as a map is drawn).
+    # Deterministic and site-agnostic: it depends on the compass, not on FORGE.
+    if axis[0] < 0:
+        axis = -axis
 
     def along(p):
         return (p - well_xy) @ axis                       # signed, wellhead=0
