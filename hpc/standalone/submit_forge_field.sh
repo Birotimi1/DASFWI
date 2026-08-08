@@ -165,7 +165,20 @@ cells() {
 # The optimizer question was already settled on the FORGE synthetic (nadam), so
 # those three cells are better spent here. Optimizer sweep is still reachable
 # with SWEEP=opt.
-if [[ "$SWEEP" == "opt" ]]; then
+# >>> SWEEP=shots: THE ILLUMINATION TEST. <<<
+# 318 shots exist; the last campaign used 20 (6%). Park used 192 gathers.
+# At 20 shots x 103 channels we have 0.05 traces per model cell against Park's
+# ~1.04 -- underdetermined by 20:1, which is what the vertical fingering in our
+# sections IS. Gradient smoothing moved roughness by 3%, so the roughness is not
+# coming from the gradient; it is coming from missing data.
+# ONE VARIABLE: same recipe, same 30 iterations, only the shot count changes,
+# against the 20-shot cells already on disk. 4 cells, ~12 SU.
+if [[ "$SWEEP" == "shots" ]]; then
+  for n in 60 100; do
+    echo "H|--well 78A-32 --arm convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30 --shots $n"
+    echo "H|--well 78B-32 --arm convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30 --shots $n"
+  done
+elif [[ "$SWEEP" == "opt" ]]; then
   for o in adam adamw nadam sgd; do
     [[ "$o" == "$OPT" ]] && continue
     echo "S|--well 78A-32 --arm convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $o --iterations 150"
@@ -227,7 +240,9 @@ case "$MODE" in
     # rebalanced the campaign toward the switch and shipped three configs with
     # only one iteration count; the tag check passed because the tags were
     # still distinct. Checking uniqueness is not checking completeness.
-    unpaired=$(cells | sed 's/^[A-Z]|//' | awk '
+    # group H varies SHOTS at fixed iterations by design, so the 30/150 rule
+    # does not apply to it -- an exception that has to be explicit, not silent.
+    unpaired=$(cells | grep -v '^H|' | sed 's/^[A-Z]|//' | awk '
         { it=""; line=$0
           if (match(line, /--iterations [0-9]+/)) {
               it = substr(line, RSTART+13, RLENGTH-13)

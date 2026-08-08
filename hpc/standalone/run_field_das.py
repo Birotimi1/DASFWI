@@ -75,7 +75,29 @@ from forge.field_loader import load_forge_field, summarize
 # [1] PARAMETERS
 # ============================================================================
 WELL = "78A-32"        # 78A-32 (1010 ch) | 78B-32 (1206 ch)
-N_SHOTS = 20           # walkaway shots to load
+# >>> THE ILLUMINATION DEFICIT -- probably why our sections look nothing like
+# >>> Park's, and it is not a tuning detail. <<<
+# 318 shots exist. We were using 20 (6%). Park used 192 gathers, both wells.
+#
+#   ours,  20 shots x 103 ch =  2,060 traces vs 40,640 model cells -> 0.05 /cell
+#   Park, 192 shots x 220 ch = 42,240 traces                       -> 1.04 /cell
+#
+# A 2-D FWI at 0.05 traces per cell is underdetermined by ~20:1. Every
+# source-receiver pair carves its own sensitivity streak, and with too few
+# shots those streaks never overlap enough to average out -- which is exactly
+# the vertical fingering in our models. No amount of gradient smoothing fixes
+# a data deficit, and the smoothing A/B agreed: it moved roughness by 3%.
+#
+# AND IT IS FREE. Cost ~ shots x iterations, so 100 shots x 30 iterations costs
+# the same 3000 shot-gradients as 20 x 150 -- and the FORGE synthetic already
+# measured 30 iterations as BETTER than 150 (shallow error grows monotonically),
+# which is also what Park used. We were spending our budget on iterations that
+# made the model worse instead of on data.
+N_SHOTS = 100          # walkaway shots to load (318 available)
+#: shots per gradient step. A full 100-shot wavefield is ~40 GiB; batching keeps
+#: it near 8 GiB and makes the gradient stochastic, which adam/nadam handle and
+#: line-search methods do not (lbfgs/nlcg are refused by this driver anyway).
+SHOT_BATCH = 20
 MISFIT = "gc"          # l2 | envelope | gc | sdtw | sinkhorn | weci
 OPTIMIZER = "adam"     # sgd | adagrad | adam | adamw | nadam
 ITERATIONS = 200
@@ -229,7 +251,7 @@ def _route_b_starter(bundle, g, nz, nx, device, iters, optimizer_name):
                      waveform_normalize=st["normalize"], cache_result=False,
                      save_fig_epoch=-1, das_layer=bundle["das_layer"],
                      obs_key="strain_rate")
-    f0.forward(iteration=iters, batch_size=st["batch_size"],
+    f0.forward(iteration=iters, batch_size=st.get("batch_size") or SHOT_BATCH,
                checkpoint_segments=st["checkpoint_segments"])
     return m0.vp.detach().cpu().numpy()
 
@@ -245,6 +267,9 @@ def main():
     ap.add_argument("--misfit", default=MISFIT, choices=MISFITS)
     ap.add_argument("--optimizer", default=OPTIMIZER, choices=sorted(OPTIMIZERS))
     ap.add_argument("--iterations", type=int, default=ITERATIONS)
+    ap.add_argument("--batch-shots", type=int, default=SHOT_BATCH,
+                    dest="batch_shots",
+                    help="shots per gradient step; caps GPU memory")
     ap.add_argument("--dz", type=float, default=DZ)
     ap.add_argument("--dt", type=float, default=DT_MODEL)
     ap.add_argument("--nt", type=int, default=NT_MODEL)
@@ -774,7 +799,7 @@ def main():
                              skip=sk, lam=float(lam)))
             n = min(args.chunk, band_iters - in_band)
             fwi.forward(iteration=n, start_iter=done,
-                        batch_size=settings["batch_size"],
+                        batch_size=(settings["batch_size"] or args.batch_shots),
                         checkpoint_segments=settings["checkpoint_segments"],
                         cutoff_freq=f_band)
             done += n; in_band += n
