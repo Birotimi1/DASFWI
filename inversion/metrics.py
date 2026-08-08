@@ -55,3 +55,53 @@ def model_scores(true, inv, deep=None):
         out["mape_deep"] = mape(true[deep], inv[deep])
         out["ssim_deep"] = ssim(true[deep], inv[deep])
     return out
+
+
+def boundary_depth(vp, dz, v_contour=4500.0):
+    """Depth [m] of the first crossing of `v_contour`, per column. NaN if none."""
+    v = np.asarray(vp, float)
+    out = np.full(v.shape[1], np.nan)
+    for j in range(v.shape[1]):
+        i = np.flatnonzero(v[:, j] >= v_contour)
+        if i.size:
+            out[j] = i[0] * float(dz)
+    return out
+
+
+def dip_recovery(vp_true, vp_init, vp_final, dz, dx, v_contour=4500.0,
+                 edge_frac=0.15):
+    """How much of a TRUE lateral dip did the inversion actually recover?
+
+    >>> THE QUESTION THIS PROJECT COULD NOT ANSWER. <<<
+    Park's FORGE section has a basement rising ~650 m across it, and ours are
+    flat -- but Park's dip is an INPUT to their FWI (it comes from 3-D surface
+    seismic via INV1), not an output of it. So "we do not match Park" never
+    established whether a single-well DAS-VSP can recover a dip AT ALL.
+
+    With a dip in the synthetic and a flat starting model, it can be measured:
+
+        recovered_frac = (dip_final - dip_init) / (dip_true - dip_init)
+
+    1.0 = fully recovered, 0.0 = the inversion added no lateral structure,
+    negative = it moved the wrong way. Columns within `edge_frac` of either edge
+    are dropped: they are outside the shot aperture and scoring them would
+    measure the taper.
+    """
+    nx = np.asarray(vp_true).shape[1]
+    k = max(1, int(edge_frac * nx))
+    sl = slice(k, nx - k)
+    x = np.arange(nx)[sl] * float(dx) / 1000.0
+
+    def slope(v):
+        b = boundary_depth(v, dz, v_contour)[sl]
+        m = np.isfinite(b)
+        if m.sum() < 4:
+            return float("nan")
+        return float(np.polyfit(x[m], b[m], 1)[0])        # m per km
+
+    d_t, d_i, d_f = slope(vp_true), slope(vp_init), slope(vp_final)
+    denom = d_t - d_i
+    frac = (d_f - d_i) / denom if np.isfinite(denom) and abs(denom) > 1e-9 \
+        else float("nan")
+    return dict(dip_true=d_t, dip_init=d_i, dip_final=d_f,
+                recovered_frac=frac, v_contour=v_contour)

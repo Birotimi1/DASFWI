@@ -83,12 +83,19 @@ OPTIMIZERS = config.LIU_OPTIMIZERS
 
 def build_truth(nz, nx, ground):
     """True Vp: the FORGE proxy (zones I/II/III) under the measured ramp."""
-    vp = forge_proxy_vp(nz, nx, dz=DZ, z_air=0.0)      # zones, no air yet
+    vp = forge_proxy_vp(nz, nx, dz=DZ, dx=DX, z_air=0.0,   # zones, no air yet
+                        dip_m_per_km=args.dip)
     return ns.with_air_layer_topo(vp, ground, DZ)      # air ABOVE the topography
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--dip", type=float, default=0.0,
+                    help="basement dip in metres of boundary depth per km. "
+                         "Park's FORGE section is about -230 (shallowing to "
+                         "the right). 0 = laterally homogeneous. THE TEST: can "
+                         "a single-well DAS-VSP recover a dip at all, from a "
+                         "flat start, when no surface seismic is available?")
     ap.add_argument("--arm", default="switch", choices=ARMS)
     ap.add_argument("--refiner", default="gc",
                     choices=("l2", "gc", "convsi", "tfphase"))
@@ -181,6 +188,7 @@ def main():
            + (f"_w{args.f0_true:g}-{f0_asm:g}" if f0_asm != args.f0_true
               else f"_w{args.f0_true:g}")
            + f"_snr{args.snr:g}"
+           + (f"_dip{args.dip:g}" if args.dip else "")
            + ("_ac" if args.acoustic_data else "_el")
            + ("_flat" if args.flat_datum else "_topoair")
            + ("_b" + args.bands.replace(",", "-") if args.bands else "")
@@ -321,7 +329,12 @@ def main():
         L = np.asarray(fwi.iter_loss)
         below = ~water_mask
         sc = model_scores(vp_true[below.any(axis=1)], vp[below.any(axis=1)])
-        m = dict(tag=tag, arm=arm, refiner=args.refiner, robust=args.robust,
+        # DIP RECOVERY -- the one number that says whether a single-well
+        # DAS-VSP can build lateral structure without surface seismic.
+        from inversion.metrics import dip_recovery as _dipr
+        _dip = (_dipr(vp_true, vp0, vp, DZ, DX) if args.dip else {})
+        m = dict(**{f"dip_{k}": v for k, v in _dip.items()},
+                 tag=tag, arm=arm, refiner=args.refiner, robust=args.robust,
                  optimizer=args.optimizer, iterations=int(sum(iters_by_band)),
                  iterations_done=int(done), complete=bool(complete),
                  runtime_h=round(hours, 3),

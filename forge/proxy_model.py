@@ -54,12 +54,27 @@ V_III = (5500.0, 5900.0)
 V_III_BOTTOM_DEPTH = 2000.0   # depth at which zone III reaches V_III[1]
 
 
-def forge_proxy_vp(nz, nx, dz=DZ, z_air=Z_AIR):
+def forge_proxy_vp(nz, nx, dz=DZ, z_air=Z_AIR, dip_m_per_km=0.0, dx=None):
     """Piecewise-linear FORGE proxy vp [nz, nx] (float64), zones per E11.
 
-    The profile is 1-D in depth (laterally homogeneous) and broadcast over x.
     Zone III grades linearly from V_III[0] at Z_II_BOTTOM to V_III[1] at
     V_III_BOTTOM_DEPTH and stays at V_III[1] below that.
+
+    `dip_m_per_km` TILTS the zone boundaries, shallowing them with increasing x
+    (Park's sense: their basement rises from ~1.15 km on the left to ~0.5 km on
+    the right, i.e. about -230 m/km).
+
+    >>> WHY THIS EXISTS: THE DECISIVE TEST. <<<
+    The profile was laterally homogeneous, so a DAS-only inversion could not be
+    scored on lateral structure -- there was none to recover, and the synthetic
+    could never answer whether our failure to reproduce Park's dip is a defect
+    or a limit of the acquisition.
+    It matters because Park do NOT invert FORGE from DAS alone: their VM1 comes
+    from 3-D SURFACE SEISMIC tomography (INV1) and the DAS-VSP FWI (INV3) only
+    refines it. So their dip is an input to their FWI, not an output. Whether a
+    single-well walkaway DAS-VSP can recover a dip AT ALL is unanswered in the
+    literature and unanswerable on a 1-D model.
+    Set a dip here, invert from a FLAT start, and measure what comes back.
     """
     z = np.arange(nz) * dz
     vp = np.empty(nz, dtype=np.float64)
@@ -75,7 +90,20 @@ def forge_proxy_vp(nz, nx, dz=DZ, z_air=Z_AIR):
         else:
             f = min((zi - Z_II_BOTTOM) / (V_III_BOTTOM_DEPTH - Z_II_BOTTOM), 1.0)
             vp[i] = V_III[0] + f * (V_III[1] - V_III[0])
-    return np.tile(vp[:, None], (1, nx))
+    out = np.tile(vp[:, None], (1, nx))
+    if dip_m_per_km:
+        # dip_m_per_km is the CHANGE IN BOUNDARY DEPTH per km, so Park's sense
+        # (basement rising to the right) is NEGATIVE. To place a boundary at
+        # d0 + dip*x/1000 the profile must be sampled at z MINUS that amount --
+        # the sign is easy to get backwards, and did on the first attempt: the
+        # model came out slower to the right instead of faster.
+        dxm = float(dx if dx is not None else dz)
+        shift = -(np.arange(nx) * dxm / 1000.0) * float(dip_m_per_km)
+        for j in range(nx):
+            zs = z + shift[j]
+            out[:, j] = np.interp(zs, z, vp)
+            out[zs < z_air, j] = V_AIR          # keep the air slab intact
+    return out
 
 
 def gardner_rho(vp, rho_air=1.225, v_air_max=V_AIR + 1.0):

@@ -83,7 +83,23 @@ cells() {
 # diverged on all 4 Route B cells (~54 SU) because a line search needs an
 # accurate directional derivative and shot batching makes the gradient
 # stochastic.
+# >>> THE DIP TEST -- the question the whole project rests on. <<<
+# Park's FORGE section has a basement rising ~650 m across it. Ours are flat,
+# and for a week that read as our failure. It is not comparable: Park's dip is
+# an INPUT to their FWI -- it comes from 3-D SURFACE SEISMIC via INV1, and the
+# DAS-VSP FWI (INV3) only refines it. So nothing published says whether a
+# single-well DAS-VSP can recover a dip WITHOUT surface seismic.
+# Truth is known here, so it is measurable: put -230 m/km in the model (Park's
+# -650 m over 2.8 km), start FLAT, and read dip_recovered_frac.
+#   ~1.0  DAS alone CAN build lateral structure -> our field result is fixable
+#   ~0.0  it cannot -> the honest claim is 1-D v(z) + zones, and we stop
+#         chasing a section we were never going to get
+# Both answers are publishable; only one of them is currently assumed.
 cat <<'EOF'
+6|--arm convsi --window --f0-true 14 --f0-assumed 10 --optimizer nadam --iterations 30 --dip -230
+6|--arm convsi --window --f0-true 14 --f0-assumed 10 --optimizer nadam --iterations 150 --dip -230
+6|--arm gc --window --f0-true 14 --f0-assumed 10 --optimizer nadam --iterations 30 --dip -230
+6|--arm gc --window --f0-true 14 --f0-assumed 10 --optimizer nadam --iterations 150 --dip -230
 5|--arm convsi --window --f0-true 14 --f0-assumed 10 --optimizer adam --iterations 150
 5|--arm convsi --window --f0-true 14 --f0-assumed 10 --optimizer adamw --iterations 150
 5|--arm convsi --window --f0-true 14 --f0-assumed 10 --optimizer nadam --iterations 150
