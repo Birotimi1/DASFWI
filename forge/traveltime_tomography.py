@@ -36,7 +36,8 @@ def _default_v_bounds():
 # 1. first-break picking (STA/LTA)
 # --------------------------------------------------------------------------- #
 def pick_first_breaks(gather, dt, sta_s=0.01, lta_s=0.05, threshold=3.0,
-                      min_time_s=0.0, coherence=True, med_win=21, tol_s=0.03):
+                      min_time_s=0.0, coherence=True, med_win=21, tol_s=0.03,
+                      z_rcv=None, x_offset=0.0, v_window=(1400.0, 6500.0)):
     """First-arrival sample time per trace via the STA/LTA ratio.
 
     Args:
@@ -82,15 +83,40 @@ def pick_first_breaks(gather, dt, sta_s=0.01, lta_s=0.05, threshold=3.0,
     # The remaining bias (~-28 ms) is the onset-to-peak offset -- real, and the
     # SAME for every trace, so it shifts the model rather than corrupting it.
     # Scatter is what destroys tomography, and that is what drops 124x.
+    # >>> SEARCH ONLY WHERE A DIRECT ARRIVAL CAN PHYSICALLY BE. <<<
+    # Picking the global STA/LTA max assumes the first arrival is the STRONGEST
+    # event. On real DAS it is not -- the shallow channels ring for the whole
+    # 4 s record, far louder than the arrival -- so picks landed anywhere up to
+    # 2975 ms on a gather whose arrival is at 50-250 ms, and the check-shot
+    # velocity came out 0-1080 m/s instead of 1500-5800.
+    #
+    # My synthetic validated the opposite premise (arrival amplitude 40 vs
+    # burst 8), which is why it passed there and failed here.
+    #
+    # If channel depths and a velocity range are known, the traveltime is
+    # BOUNDED: t = sqrt(z^2 + x^2) / v for v in [v_min, v_max]. That window is
+    # physics, not site knowledge -- no rock carries P waves outside ~1.5-6.5
+    # km/s -- and it excludes the ringing entirely.
+    lo_i = np.zeros(C, dtype=int)
+    hi_i = np.full(C, nt, dtype=int)
+    if z_rcv is not None:
+        r = np.hypot(np.asarray(z_rcv, float).ravel()[:C], float(x_offset))
+        lo_i = np.maximum(i0, (r / v_window[1] / dt).astype(int))
+        hi_i = np.minimum(nt, (r / v_window[0] / dt).astype(int) + 1)
+
     picks = np.full(C, np.nan)
     for c in range(C):
-        k = int(np.argmax(ratio[:, c]))
-        if ratio[k, c] < threshold:
+        a, b = int(lo_i[c]), int(hi_i[c])
+        if b - a < 2:
+            continue
+        seg = ratio[a:b, c]
+        k = int(np.argmax(seg))
+        if seg[k] < threshold:
             continue                      # no event anywhere; do not invent one
         j = k
-        while j > 0 and ratio[j - 1, c] >= threshold:
+        while j > 0 and seg[j - 1] >= threshold:
             j -= 1
-        picks[c] = j * dt
+        picks[c] = (a + j) * dt
     if coherence:
         picks = _enforce_coherence(picks, ratio, dt, threshold,
                                    med_win=med_win, tol_s=tol_s, i0=i0)

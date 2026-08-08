@@ -231,36 +231,36 @@ def main():
     # Nothing flagged it; the run completed and the loss fell.
     # A real arrival is CONTINUOUS across a fibre, so scatter about a smooth
     # trend is the test. Site-agnostic: it assumes only continuity.
-    from forge.traveltime_tomography import pick_first_breaks
-    # QC THE NEAREST SHOT. d[0] is whatever came first, and after the
-    # shot-spread fix that is a FAR offset, where the arrival is weak and
-    # emergent -- judging the picker there tests the hardest case and calls it
-    # the typical one. Picking quality degrades smoothly with offset
-    # (measured: 97% / 74% / 48% picked at +6 / -784 / -1547 m), which is
-    # physics, not a bug.
+    from forge.traveltime_tomography import (pick_first_breaks,
+                                              vsp_checkshot_velocity)
+    # >>> JUDGE THE PICKS BY THE VELOCITY THEY IMPLY, not by their smoothness.
+    # The previous check measured LOCAL SCATTER and passed picks that drift
+    # smoothly to nonsense: on the nearest shot they ran 50-2975 ms on a gather
+    # whose arrival is at 50-250 ms, scatter 0.00 ms, and the implied velocity
+    # was 0-1080 m/s. Smooth is not correct. v(z) is the quantity the starting
+    # model is actually built from, so check THAT.
     d_pk = d_near[0] if d_near.ndim == 3 else d_near
-    pk = pick_first_breaks(d_pk[:, ordr], g["dt"], min_time_s=0.02)
+    z_ch = np.sort(p["chan_z"])
+    x_near = float(np.abs(p["src_x"][near[0]]))
+    pk = pick_first_breaks(d_pk[:, ordr], g["dt"], min_time_s=0.01,
+                           z_rcv=z_ch, x_offset=x_near)
     fin = np.isfinite(pk)
+    ok_v = False
+    detail = f"only {int(fin.sum())}/{pk.size} channels picked"
     if fin.sum() >= 32:
-        # LOCAL median deviation, not a fit. A global cubic cannot represent a
-        # real VSP moveout curve, so it reported 41-115 ms of "scatter" on picks
-        # that are locally smooth to 0-2 ms -- the metric was failing, not the
-        # picks, and it would have blocked a launch on a false alarm.
-        v = pk[fin]
-        h = 15
-        med = np.array([np.median(v[max(0, k - h):k + h + 1])
-                        for k in range(v.size)])
-        scat = float(np.median(np.abs(v - med)))
-        frac = float(fin.mean())
-        tol = 0.25 / (2.0 * args.f0)          # a quarter of T/2
-        chk(scat < tol and frac > 0.6, "first-break picks",
-            f"{fin.sum()}/{pk.size} picked ({frac*100:.0f}%) on the nearest "
-            f"shot, local scatter {scat*1e3:.2f} ms "
-            f"(limit {tol*1e3:.1f} ms = T/8)")
-    else:
-        chk(False, "first-break picks",
-            f"only {int(fin.sum())} of {pk.size} channels picked -- the "
-            f"traveltime starter cannot be built from this")
+        try:
+            zo, vo = vsp_checkshot_velocity(pk, z_ch, x_offset=x_near)
+            v_lo, v_hi = float(np.nanmin(vo)), float(np.nanmax(vo))
+            # increases with depth, and inside the physically possible band
+            mono = float(np.corrcoef(zo, vo)[0, 1])
+            ok_v = (args.vmin * 0.8 <= v_lo and v_hi <= args.vmax
+                    and mono > 0.5 and fin.mean() > 0.6)
+            detail = (f"{100*fin.mean():.0f}% picked, v(z) {v_lo:.0f}-{v_hi:.0f} m/s, "
+                      f"depth-corr {mono:+.2f} (need >+0.50, inside "
+                      f"{args.vmin*0.8:.0f}-{args.vmax:.0f})")
+        except Exception as ex:                                # noqa: BLE001
+            detail = f"checkshot failed: {type(ex).__name__}: {ex}"
+    chk(ok_v, "first-break picks -> v(z)", detail)
 
     # a modestly shifted copy stands in for a synthetic: enough mismatch to
     # give a non-zero gradient, not so much that the misfit saturates
