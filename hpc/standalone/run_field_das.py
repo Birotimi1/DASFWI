@@ -165,15 +165,29 @@ def pick_device(arg=None):
 
 
 def _raw_loss_fields(loss_fn):
-    """first/last RAW misfit from a BlendedMisfit, if this arm uses one."""
-    hist = getattr(loss_fn, "raw_history", None)   # ConditionedMisfit delegates
-    if not hist:
+    """First/last RAW misfit PER TERM, so first-vs-last is like-for-like.
+
+    Comparing across terms measures their scale difference, not progress: the
+    switch arms reported the SAME drop% at 30 and at 150 iterations because
+    raw[0] was an envelope value and raw[-1] a convsi one.
+    """
+    out = {}
+    for key, attr in (("lo", "raw_lo"), ("hi", "raw_hi")):
+        hist = getattr(loss_fn, attr, None)        # ConditionedMisfit delegates
+        good = [v for v in (hist or []) if np.isfinite(v)]
+        if good:
+            out[f"raw_{key}_first"] = float(good[0])
+            out[f"raw_{key}_last"] = float(good[-1])
+            out[f"raw_{key}_n"] = len(good)
+    if not out:
         return {}
-    good = [v for v in hist if np.isfinite(v)]
-    if not good:
-        return {"raw_loss_finite": False}
-    return {"raw_loss_first": float(good[0]), "raw_loss_last": float(good[-1]),
-            "raw_loss_n": len(good), "raw_loss_finite": True}
+    # score on the term that ran the LONGEST -- for a switch that handed over,
+    # that is the refiner it spent most of the run in.
+    best = max(("lo", "hi"), key=lambda k: out.get(f"raw_{k}_n", 0))
+    out.update(raw_loss_first=out[f"raw_{best}_first"],
+               raw_loss_last=out[f"raw_{best}_last"],
+               raw_loss_term=best, raw_loss_finite=True)
+    return out
 
 
 def gradient_start_model(nz, nx, dz):

@@ -131,7 +131,11 @@ class BlendedMisfit(Misfit):
         # by different numbers. Reporting that as a percent reduction compares
         # nothing. The optimisation is unchanged (it is validated on Marmousi);
         # what was broken is that the normalised value was the only one recorded.
-        self.raw_history = []
+        # PER-TERM. A single list mixes the two misfits whenever lambda moves,
+        # and first-vs-last then measures their SCALE DIFFERENCE rather than any
+        # progress -- which is why switch cells reported the identical drop% at
+        # 30 and at 150 iterations.
+        self.raw_lo, self.raw_hi = [], []
         self.set_lambda(lam)
 
     # -- schedule control ---------------------------------------------------
@@ -181,28 +185,34 @@ class BlendedMisfit(Misfit):
 
         if lam <= 0.0:                                   # short-circuit: lo only
             e = self._eval(self.loss_lo, a, b)
-            self._record(e)
+            self._record(self.raw_lo, e)
             return e / self._scale("lo", e, wrt) if self.normalize else e
         if lam >= 1.0:                                   # short-circuit: hi only
             e = self._eval(self.loss_hi, a, b)
-            self._record(e)
+            self._record(self.raw_hi, e)
             return e / self._scale("hi", e, wrt) if self.normalize else e
 
         e_lo = self._eval(self.loss_lo, a, b)
         e_hi = self._eval(self.loss_hi, a, b)
-        self._record((1.0 - lam) * e_lo + lam * e_hi)
+        self._record(self.raw_lo, e_lo)
+        self._record(self.raw_hi, e_hi)
         if not self.normalize:
             return (1.0 - lam) * e_lo + lam * e_hi
         return ((1.0 - lam) * e_lo / self._scale("lo", e_lo, wrt)
                 + lam * e_hi / self._scale("hi", e_hi, wrt))
 
-    def _record(self, e):
-        """Keep the RAW value so progress is measurable. See raw_history."""
+    @staticmethod
+    def _record(store, e):
+        """Append a RAW term value. Per-term, so first-vs-last is like-for-like."""
         try:
-            self.raw_history.append(float(e.detach()) if torch.is_tensor(e)
-                                    else float(e))
+            store.append(float(e.detach()) if torch.is_tensor(e) else float(e))
         except (TypeError, ValueError):          # never let logging kill a run
             pass
+
+    @property
+    def raw_history(self):
+        """Back-compat: the term with the most samples (the dominant one)."""
+        return self.raw_lo if len(self.raw_lo) >= len(self.raw_hi) else self.raw_hi
 
 
 # --------------------------------------------------------------------------- #
