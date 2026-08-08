@@ -826,13 +826,29 @@ def main():
     vp_final, iter_loss, metrics = _save(iterations, hours, complete=True)
     print(json.dumps(metrics, indent=2), flush=True)
 
+    # PLOTTING MUST NOT BE ABLE TO DESTROY A FINISHED RUN. This block raised
+    # KeyError on bundle["grid"]["src_z_grid"] (the key is bundle["src_z_grid"])
+    # AFTER metrics.json was written, so 18 cells burned ~60 SU, completed the
+    # inversion, saved their metrics -- and produced no figure at all. A figure
+    # is a convenience; two hours of H100 time is not.
+    try:
+        _plot_result(out_dir, tag, args, bundle, g, nz, nx,
+                     vp_init, vp_final, iter_loss)
+    except Exception as ex:                                  # noqa: BLE001
+        print(f"*** figure FAILED ({type(ex).__name__}: {ex}) -- results are "
+              f"still in {out_dir}; replot from iter_vp.npz", flush=True)
+    print("saved results to", out_dir, flush=True)
+
+
+def _plot_result(out_dir, tag, args, bundle, g, nz, nx, vp_init, vp_final,
+                 iter_loss):
     from forge.plot_field_result import velocity_panel
     fig, axes = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
     # clip the panel at the deepest RECEIVER: below it nothing constrains the
     # model, so plotting further shows the starting model dressed as a result.
     z_max_km = float(np.max(bundle["channel_z_grid"])) / 1000.0
     ground_m = (ns.surface_profile(bundle["src_x_grid"] * g["dx"],
-                                   bundle["grid"]["src_z_grid"] * g["dz"],
+                                   bundle["src_z_grid"] * g["dz"],
                                    nx, g["dx"])
                 if args.topo_air else None)
     for ax, (d, ttl) in zip(axes[:2], [(vp_init, f"initial ({args.starting})"),
@@ -846,7 +862,7 @@ def main():
     axes[2].plot(iter_loss, "k.-")
     axes[2].set(title="loss", xlabel="iteration")
     fig.savefig(out_dir / "final.png", dpi=150)
-    print("saved results to", out_dir, flush=True)
+    plt.close(fig)
 
 
 if __name__ == "__main__":
