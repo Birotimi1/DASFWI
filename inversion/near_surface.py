@@ -219,3 +219,40 @@ def describe(nz, nx, dz, z_air, v_min, f_max, dx, src_z=None, aspect=4.0):
         else:
             parts.append("relief < lambda/4: flat datum ok, air layer not needed")
     return "near-surface: " + "; ".join(parts)
+
+
+def imprint_mask(nz, nx, dz, dx, src_iz, src_ix, rcv_iz, rcv_ix,
+                 radius_m=100.0, taper_m=None):
+    """Zero the gradient around sources and receivers -- Noe et al. 2025.
+
+    >>> THE PIECE OF NOE'S CONDITIONING WE NEVER IMPLEMENTED. <<<
+    From their FWI workflow, alongside the three we did build (amplitude-
+    dependent channel weighting, arrival windowing, lambda/4 gradient
+    smoothing):
+
+        "We remove source and receiver imprints by setting the kernels to zero
+         within a radius of 100 m around their respective locations."
+
+    The adjoint kernel is singular AT a source or receiver: the wavefield there
+    is dominated by the near-field term, which carries no information about the
+    medium but has enormous amplitude. Left in, it stamps a bright spot at every
+    source and receiver and streaks radiate outward along the raypaths. That is
+    exactly what our FORGE sections show -- a fan centred on the wellhead, which
+    is the RECEIVER imprint, plus surface artefacts at the shot line.
+
+    Tapered rather than cut, so the mask does not imprint its own hard edge in
+    place of the one it removes. `radius_m` defaults to Noe's 100 m; pass a
+    wavelength-scaled value at other frequencies.
+    """
+    taper_m = radius_m if taper_m is None else float(taper_m)
+    m = np.ones((int(nz), int(nx)), float)
+    zz = np.arange(nz)[:, None] * float(dz)
+    xx = np.arange(nx)[None, :] * float(dx)
+    pts = list(zip(np.atleast_1d(src_iz), np.atleast_1d(src_ix))) + \
+          list(zip(np.atleast_1d(rcv_iz), np.atleast_1d(rcv_ix)))
+    for iz, ix in pts:
+        r = np.hypot(zz - float(iz) * dz, xx - float(ix) * dx)
+        # 0 inside radius, ramping to 1 at radius+taper
+        w = np.clip((r - radius_m) / max(taper_m, 1e-9), 0.0, 1.0)
+        m = np.minimum(m, w)
+    return m

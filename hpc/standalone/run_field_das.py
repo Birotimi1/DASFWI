@@ -273,6 +273,10 @@ def main():
     ap.add_argument("--misfit", default=MISFIT, choices=MISFITS)
     ap.add_argument("--optimizer", default=OPTIMIZER, choices=sorted(OPTIMIZERS))
     ap.add_argument("--iterations", type=int, default=ITERATIONS)
+    ap.add_argument("--imprint-radius", type=float, default=100.0,
+                    dest="imprint_radius",
+                    help="metres around each source/receiver where the gradient "
+                         "is zeroed (Noe et al. 2025 use 100 m). 0 disables.")
     ap.add_argument("--batch-shots", type=int, default=SHOT_BATCH,
                     dest="batch_shots",
                     help="shots per gradient step; caps GPU memory")
@@ -413,6 +417,9 @@ def main():
            # appear in the tag, and the default is what hides it (only non-default
            # values were ever encoded).
            + (f"_s{args.shots}" if args.shots != N_SHOTS else "")   # 20 = default
+           + ("_noimp" if args.imprint_radius <= 0 else "")
+           + (f"_imp{args.imprint_radius:.0f}"
+              if 0 < args.imprint_radius != 100.0 else "")
            + ("_smoke" if args.smoke else ""))
     out_dir = OUT_ROOT / tag
     print(f"=== FORGE field {tag} on {device}, {iterations} iterations ===",
@@ -562,6 +569,26 @@ def main():
     # it does, which is a large part of why our sections look nothing like
     # Park's. Park stop at the fibre. Tapered rather than cut, so the mask does
     # not itself imprint a horizontal edge on the model.
+    # NOE'S SOURCE/RECEIVER IMPRINT REMOVAL -- the fourth part of their
+    # conditioning, and the only one we had not built. The kernel is singular at
+    # a source or receiver (near-field term, huge amplitude, no information
+    # about the medium), so leaving it in stamps a bright spot there and streaks
+    # radiate outward along the raypaths. That is the fan centred on the
+    # wellhead in our sections: the RECEIVER imprint.
+    if args.imprint_radius > 0:
+        rcv_iz = np.round(np.asarray(bundle["channel_z_grid"]) / g["dz"]).astype(int)
+        imp = ns.imprint_mask(nz, nx, g["dz"], g["dx"],
+                              src_iz=bundle["src_z_grid"],
+                              src_ix=bundle["src_x_grid"],
+                              rcv_iz=rcv_iz,
+                              rcv_ix=np.full(rcv_iz.size,
+                                             bundle["well_x_index"]),
+                              radius_m=args.imprint_radius)
+        grad_mask *= imp
+        print(f"    imprint mask: {args.imprint_radius:.0f} m around sources and "
+              f"receivers zeroed (Noe et al. 2025); "
+              f"{100*(imp < 0.5).mean():.1f}% of cells suppressed", flush=True)
+
     z_deep = float(np.max(bundle["channel_z_grid"]))
     k_deep = int(round(z_deep / g["dz"]))
     taper = max(1, int(round(0.5 * VP_BOUND[1] / args.f0 / g["dz"])))  # lambda/2

@@ -173,7 +173,22 @@ cells() {
 # coming from the gradient; it is coming from missing data.
 # ONE VARIABLE: same recipe, same 30 iterations, only the shot count changes,
 # against the 20-shot cells already on disk. 4 cells, ~12 SU.
-if [[ "$SWEEP" == "shots" ]]; then
+# >>> SWEEP=imprint: NOE'S SOURCE/RECEIVER IMPRINT REMOVAL. <<<
+# Re-reading Noe et al. 2025 (the paper this workflow is built on) their
+# conditioning has FOUR parts and we had built three: amplitude-dependent
+# channel weighting, arrival windowing, lambda/4 gradient smoothing -- and NOT
+# "we remove source and receiver imprints by setting the kernels to zero within
+# a radius of 100 m around their respective locations".
+# The kernel is singular at a source or receiver, so that near-field energy
+# stamps a bright spot and streaks radiate along the raypaths. Our sections show
+# a fan centred on the wellhead, which is precisely the receiver imprint.
+# ONE VARIABLE against the 100-shot cells already on disk: imprint on/off.
+if [[ "$SWEEP" == "imprint" ]]; then
+  for w in 78A-32 78B-32; do
+    echo "I|--well $w --arm convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30 --shots 100 --imprint-radius 0"
+    echo "I|--well $w --arm convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30 --shots 100"
+  done
+elif [[ "$SWEEP" == "shots" ]]; then
   for n in 60 100; do
     echo "H|--well 78A-32 --arm convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30 --shots $n"
     echo "H|--well 78B-32 --arm convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30 --shots $n"
@@ -245,7 +260,7 @@ case "$MODE" in
     # explicitly rather than loosening the rule -- the rule exists because the
     # field has no truth, so the stopping point must be OBSERVED, and that
     # applies to every group whose question is "how long should this run".
-    unpaired=$(cells | grep -vE '^[HS]\|' | sed 's/^[A-Z]|//' | awk '
+    unpaired=$(cells | grep -vE '^[HSI]\|' | sed 's/^[A-Z]|//' | awk '
         { it=""; line=$0
           if (match(line, /--iterations [0-9]+/)) {
               it = substr(line, RSTART+13, RLENGTH-13)
