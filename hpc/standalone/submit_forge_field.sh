@@ -187,7 +187,6 @@ elif [[ "$SWEEP" == "1" ]]; then
   # the switch at BOTH iteration counts, and with the gc refiner Park chose --
   # gc is amplitude-insensitive, which matters more on field data than on the
   # inverse-crime synthetics where convsi won.
-  echo "F|--well 78A-32 --arm switch --refiner convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30"
   echo "F|--well 78A-32 --arm switch --refiner gc --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30"
   echo "F|--well 78A-32 --arm switch --refiner gc --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 150"
   echo "F|--well 78B-32 --arm switch --refiner convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30"
@@ -206,6 +205,7 @@ E|--well 78A-32 --arm convsi --topo-air --grad-smooth wavelength --starting rout
 G|--well 78A-32 --arm gc --window --topo-air --grad-smooth none --starting traveltime --optimizer $OPT --iterations 30
 G|--well 78A-32 --arm gc --window --topo-air --grad-smooth none --starting traveltime --optimizer $OPT --iterations 150
 E|--well 78A-32 --arm convsi --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 150
+E|--well 78A-32 --arm switch --refiner convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 30
 E|--well 78A-32 --arm switch --refiner convsi --window --topo-air --grad-smooth wavelength --starting route_b --optimizer $OPT --iterations 150
 EOF
 }
@@ -240,9 +240,12 @@ case "$MODE" in
     # rebalanced the campaign toward the switch and shipped three configs with
     # only one iteration count; the tag check passed because the tags were
     # still distinct. Checking uniqueness is not checking completeness.
-    # group H varies SHOTS at fixed iterations by design, so the 30/150 rule
-    # does not apply to it -- an exception that has to be explicit, not silent.
-    unpaired=$(cells | grep -v '^H|' | sed 's/^[A-Z]|//' | awk '
+    # Groups H and S vary ONE axis (shots / optimizer) at fixed iterations by
+    # design, so the 30/150 rule does not apply to them. The exception is listed
+    # explicitly rather than loosening the rule -- the rule exists because the
+    # field has no truth, so the stopping point must be OBSERVED, and that
+    # applies to every group whose question is "how long should this run".
+    unpaired=$(cells | grep -vE '^[HS]\|' | sed 's/^[A-Z]|//' | awk '
         { it=""; line=$0
           if (match(line, /--iterations [0-9]+/)) {
               it = substr(line, RSTART+13, RLENGTH-13)
