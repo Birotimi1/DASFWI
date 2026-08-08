@@ -229,6 +229,43 @@ def smoothing_ab(rs):
           "better;\n  read both columns before concluding.")
 
 
+def shots_ab(rs):
+    """Roughness vs SHOT COUNT -- the illumination test.
+
+    The hypothesis: our sections are rough because 20 shots x 103 channels give
+    0.05 traces per model cell against Park's ~1.04, so the sensitivity streaks
+    of individual source-receiver pairs never average out. If that is right,
+    roughness falls as shots rise, with everything else held fixed. If it is
+    not, roughness is flat and illumination is not the problem -- which is a
+    useful answer too, and cheaper than assuming either way.
+    """
+    print("\n=== illumination: roughness vs SHOT COUNT (one variable) ===")
+    by = {}
+    for m in rs:
+        key = (m.get("well"), m.get("refiner"), m.get("starting"),
+               m.get("iterations"), bool(m.get("window")),
+               m.get("grad_smooth", "none") != "none")
+        by.setdefault(key, []).append(m)
+    found = False
+    for key, cells in sorted(by.items(), key=lambda kv: str(kv[0])):
+        if len({c.get("n_shots") for c in cells}) < 2:
+            continue
+        found = True
+        cells = sorted(cells, key=lambda c: c.get("n_shots") or 0)
+        base = cells[0]["_rough"]
+        print(f"  {key[0]} {key[1]} {key[3]} it:")
+        for c in cells:
+            d = (100.0 * (c["_rough"] - base) / base) if base else float("nan")
+            print(f"      {c.get('n_shots'):>4} shots -> roughness "
+                  f"{c['_rough']:.3e} ({d:+6.1f}%)   data fit "
+                  f"{c['drop_pct']:6.1f}%   {c.get('runtime_h', 0):.2f} h")
+    if not found:
+        print("  (no matched pair differing only in shot count)")
+    else:
+        print("  Roughness FALLING with shots -> illumination was the limit.\n"
+              "  Roughness FLAT -> it was not, and more data will not fix it.")
+
+
 def validate(rs, zones, dz, log_path=None):
     print("\n=== VALIDATION (never a ranking key) ===")
     from inversion.field_acceptance import (cross_validate, zone_boundaries,
@@ -305,6 +342,7 @@ def main():
         print(f"\n  {len(bad)} cell(s) DIVERGED: "
               f"{', '.join(m.get('tag','?') for m in bad)}")
     smoothing_ab(rs)
+    shots_ab(rs)
     if args.validate:
         zones = tuple(float(x) for x in args.zones.split(",") if x.strip())
         dz = args.dz
